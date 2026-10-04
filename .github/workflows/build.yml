@@ -1,0 +1,49 @@
+name: Build and test
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Qt
+        run: sudo apt-get update && sudo apt-get install -y qt6-base-dev qt6-charts-dev qt6-tools-dev qt6-l10n-tools
+      - name: Build
+        run: mkdir build && cd build && qmake6 ../Polar.pro CONFIG+=release && make -j2
+      - name: Build and run tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: mkdir -p build/tests && cd build/tests && qmake6 ../../tests/tests.pro && make -j2 && ./polar_tests
+  windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.0'
+          arch: win64_msvc2022_64
+          modules: qtcharts
+          cache: true
+      - name: Build
+        shell: cmd
+        run: |
+          mkdir build
+          cd build
+          qmake ..\Polar.pro CONFIG+=release
+          nmake
+      - name: Build and run tests
+        shell: cmd
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          mkdir build\tests
+          cd build\tests
+          qmake ..\..\tests\tests.pro
+          nmake
+          debug\polar_tests.exe

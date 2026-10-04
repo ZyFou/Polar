@@ -11,14 +11,76 @@
 #include "wtapi.h"
 #include "performanceanalysis.h"
 #include "editionpicker.h"
-#include "raceanalysisdialog.h"
+#include "leaderboardoverview.h"
+#include "listtransition.h"
+#include "notificationcenter.h"
+#include "appstyle.h"
+#include "switchbutton.h"
+#include "startmenushortcut.h"
+#include "updater.h"
+#include <QTemporaryDir>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QCheckBox>
+#include <QComboBox>
+#include <QSpinBox>
+#include <QScrollBar>
+#include <QListWidget>
+#include <QCryptographicHash>
+#include <QProcess>
+#include <QThread>
+#include <QSaveFile>
+#include <QUuid>
+#include <QtEndian>
 #include "render.h"
 #include "appsettings.h"
 #include "ui_mainwindow.h"
 
 class PolarTests : public QObject {
     Q_OBJECT
+    QTcpServer fixture;
+    QStringList requests;
+    qint64 tournamentStart=0;
+    QByteArray responseFor(const QUrl &url) {
+        if(url.path()=="/older_editions") return "<a href='/edition/GLB/62.db'><a href='/edition/GLB/61.db'><a href='/edition/GLB/60.db'>";
+        if(url.path().endsWith("/metadata")) {
+            const int edition=url.path().split('/')[2].toInt();
+            const auto start=edition==0 || edition==62?tournamentStart:tournamentStart-(62-edition)*86400LL*30;
+            return QJsonDocument(QJsonObject{{"start_at",start},{"end_at",start+86400}}).toJson();
+        }
+        if(url.path().endsWith("/get-user")) {
+            const int edition=url.path().split('/')[2].toInt();
+            return QJsonDocument(QJsonObject{{"points",QJsonArray{0,1000000+(edition-60)*100000}},{"points_wins",QJsonArray{900000,950000}}}).toJson();
+        }
+        if(url.path().endsWith("/get-top100")) return QJsonDocument(QJsonArray{makePlayer(1,"One",1),makePlayer(2,"Two",2)}).toJson();
+        return "{}";
+    }
+    QJsonObject makePlayer(int id,const QString &name,int rank,double endHour=2) {
+        return {{"id",QString::number(id)},{"name",name},{"ranks",QJsonArray{rank,rank,rank,rank,rank}},
+            {"hour",QJsonArray{0,0.5,1,1.5,endHour}}, {"points",QJsonArray{200000000-id*1000000,205000000-id*1000000,210000000-id*1000000,215000000-id*1000000,220000000-id*1000000}},
+            {"wins",QJsonArray{0,5,10,15,20}},{"wins_pace",QJsonArray{0,10,10,10,10}}};
+    }
 private slots:
+    void initTestCase() {
+        QNetworkProxy::setApplicationProxy(QNetworkProxy::NoProxy);
+        QVERIFY(fixture.listen(QHostAddress::LocalHost));
+        tournamentStart=QDateTime::currentSecsSinceEpoch()-7200;
+        WtApi::setBaseUrlForTests(QUrl(QString("http://127.0.0.1:%1").arg(fixture.serverPort())));
+        connect(&fixture,&QTcpServer::newConnection,this,[this] {
+            while(fixture.hasPendingConnections()) {
+                auto *socket=fixture.nextPendingConnection();
+                connect(socket,&QTcpSocket::readyRead,socket,[this,socket] {
+                    const auto bytes=socket->readAll();if(socket->property("answered").toBool() || !bytes.contains("HTTP/")) return;
+                    socket->setProperty("answered",true);
+                    const auto path=QString::fromUtf8(bytes.split(' ').value(1));requests.append(path);
+                    const auto body=responseFor(QUrl(path));
+                    socket->write("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: "+QByteArray::number(body.size())+"\r\nConnection: close\r\n\r\n"+body);
+                    socket->disconnectFromHost();
+                });
+                connect(socket,&QTcpSocket::disconnected,socket,&QObject::deleteLater);
+            }
+        });
+    }
     void currentMetadataWithoutId() {
         const auto m=WtData::metadata(QJsonDocument::fromJson(R"({"start_at":1786689000,"end_at":1786946399})"));
         QVERIFY(!m.isEmpty());QVERIFY(!m.contains("id"));
@@ -151,22 +213,153 @@ private slots:
         // Old event filters must die with each replaced proxy; no dangling resize callback.
         QCOMPARE(ui.graphiqueTest->findChildren<QGraphicsProxyWidget*>().size(),0); // scene owns proxy, not view QObject tree
     }
-    void raceScenariosAndStaleData() {
-        QJsonArray data;
-        for(int i=1;i<=20;++i) data.append(QJsonObject{{"id",QString::number(i)},{"name",QString("Rival %1").arg(i)},
-            {"ranks",QString("[%1,%1,%1,%1,%1]").arg(i)}, {"hour","[0,0.5,1,1.5,2]"},
-            {"points",QString("[%1,%2,%3,%4,%5]").arg(200000000-i*1000000).arg(205000000-i*1000000).arg(210000000-i*1000000).arg(215000000-i*1000000).arg(220000000-i*1000000)}});
-        const auto now=QDateTime::currentSecsSinceEpoch();
-        QJsonObject meta{{"start_at",now-7200},{"end_at",now+3600*48}};
-        RaceAnalysisDialog dialog(data,meta);dialog.show();QTest::qWait(50);
-        const auto table=dialog.findChild<QTableWidget*>();QVERIFY(table);QCOMPARE(table->rowCount(),20);
-        QVERIFY(table->item(0,5)->text().contains("M"));
-        const auto before=table->item(0,5)->text();dialog.findChild<QDoubleSpinBox*>()->setValue(1);
-        QVERIFY(before!=table->item(0,5)->text());
-        if(!qEnvironmentVariable("POLAR_SCREENSHOT_DIR").isEmpty()) dialog.grab().save(qEnvironmentVariable("POLAR_SCREENSHOT_DIR")+"/race-analysis.png");
-        meta["start_at"]=now-36000;
-        RaceAnalysisDialog stale(data,meta);QCOMPARE(stale.findChild<QTableWidget*>()->item(0,5)->text(),QString("Unavailable"));
+    void dateForecastExcludesCurrentAndFuture() {
+        QCOMPARE(Performance::historicalProjectionByDate({100,200,300},{100,200,300},400),400.0);
+        QCOMPARE(Performance::historicalProjectionByDate({100,200,300,400,500},{100,200,300,999999,999999},400),400.0);
+        QVERIFY(std::isnan(Performance::historicalProjectionByDate({400},{100},400)));
     }
+    void currentGoalOneWithoutEditionIdInFrench() {
+        AppSettings::savedLanguage="fr_FR";AppSettings::selectedEdition=0;AppSettings::region="Glo";
+        MainWindow window;window.show();
+        auto *goal=window.findChild<QLineEdit*>("lineEdit_goal_2");QVERIFY(goal);goal->setText("1");
+        auto *result=window.findChild<QLabel*>("label_estimation_rank");QVERIFY(result);
+        QTRY_VERIFY_WITH_TIMEOUT(result->text().contains("M"),6000);
+        QVERIFY(!result->text().contains("unavailable"));
+        QVERIFY(window.findChild<QLabel*>("label_8")->text().contains("actuel"));
+        QCOMPARE(window.findChild<EditionPickerWidget*>()->accessibleName(),QString("Édition du TB"));
+        QCOMPARE(window.findChild<EditionPickerWidget*>()->tr("Current"),QString("Actuelle"));
+        QVERIFY(!requests.contains("/api/62/get-user?rank=1"));
+        if(!qEnvironmentVariable("POLAR_SCREENSHOT_DIR").isEmpty()) window.grab().save(qEnvironmentVariable("POLAR_SCREENSHOT_DIR")+"/current-rank-fr.png");
+        AppSettings::savedLanguage="en_US";
+    }
+    void fullTop100OverviewAndStaleProjections() {
+        QJsonArray data;for(int i=1;i<=100;++i)data.append(WtData::normalize(QJsonDocument(makePlayer(i,QString("Rival %1").arg(i),i))));
+        const auto now=QDateTime::currentSecsSinceEpoch();
+        LeaderboardOverview view;view.resize(1280,700);view.show();view.setMetadata(now-7200,now+48*3600);view.setSnapshot(data);
+        auto *list=view.findChild<QListWidget*>();QVERIFY(list);QCOMPARE(list->count(),100);
+        auto *status=view.findChild<QLabel*>("leaderboardFreshness");QVERIFY(status);
+        QVERIFY(status->text().contains("Snapshot"));
+        auto *first=list->item(0);auto *row=list->itemWidget(first);QVERIFY(row);
+        QStringList values;for(auto *label:row->findChildren<QLabel*>()) values<<label->text();
+        QVERIFY(values.join(' ').contains("699")); // 219M + 10M/h over 48 hours, with observed pace scenario.
+        view.findChild<QDoubleSpinBox*>()->setValue(1);
+        values.clear();for(auto *label:list->itemWidget(first)->findChildren<QLabel*>())values<<label->text();
+        QVERIFY(values.join(' ').contains("689"));
+        if(!qEnvironmentVariable("POLAR_SCREENSHOT_DIR").isEmpty()) view.grab().save(qEnvironmentVariable("POLAR_SCREENSHOT_DIR")+"/leaderboard-overview.png");
+        view.setMetadata(now-36000,now+3600);QVERIFY(status->text().contains("Stale"));
+        values.clear();for(auto *label:list->itemWidget(first)->findChildren<QLabel*>())values<<label->text();
+        QVERIFY(values.join(' ').contains("— / —"));
+    }
+    void rankAnimationPreservesItemsSelectionAndScroll() {
+        QListWidget list;list.resize(400,300);list.show();
+        const QVector<QJsonObject> first={makePlayer(1,"Same",1),makePlayer(2,"Same",2),makePlayer(3,"Three",3)};
+        auto makeRow=[](int i)->QWidget *{return new QLabel(QString::number(i));};
+        ListTransition::reconcile(&list,first,makeRow,80);
+        auto *one=list.item(0),*two=list.item(1);list.setCurrentItem(two);
+        ListTransition::reconcile(&list,{makePlayer(2,"Same",1),makePlayer(1,"Same",2),makePlayer(4,"New",3)},makeRow,80);
+        QCOMPARE(list.count(),3);QCOMPARE(list.item(0),two);QCOMPARE(list.item(1),one);QCOMPARE(list.currentItem(),two);
+        QVERIFY(list.viewport()->findChild<QWidget*>("rankTransition"));
+        QTRY_VERIFY_WITH_TIMEOUT(!list.viewport()->findChild<QWidget*>("rankTransition"),1000);
+        QCOMPARE(list.item(2)->data(Qt::UserRole).toJsonObject().value("id").toString(),QString("4"));
+    }
+    void notificationsActionsRedactionAndExpiry() {
+        AppSettings::notificationsEnabled=true;AppSettings::notificationOptions={{"error",QJsonObject{{"enabled",true},{"seconds",2}}}};
+        QWidget host;host.resize(700,500);host.show();NotificationCenter center(&host);
+        bool accepted=false;center.post("error","Failure https://private.invalid/path",[&]{accepted=true;});
+        QTest::qWait(260);QVERIFY(center.isVisible());
+        QVERIFY(!center.findChild<QLabel*>("notificationMessage")->text().contains("https://"));
+        QTest::mouseClick(center.findChild<QPushButton*>("notificationAccept"),Qt::LeftButton);QVERIFY(accepted);
+        QTRY_VERIFY(!center.isVisible());
+        center.post("error","Timed notification");QTRY_VERIFY(center.isVisible());
+        QTRY_VERIFY_WITH_TIMEOUT(!center.isVisible(),3000);
+        AppSettings::notificationsEnabled=false;center.post("error","Hidden");QVERIFY(!center.isVisible());
+        AppSettings::notificationsEnabled=true;AppSettings::notificationOptions={};
+    }
+    void liveOptionsThemeAndDisabledNotificationControls() {
+        AppSettings::useNewUI=true;AppSettings::transparentControls=false;
+        MainWindow window;window.show();bool visited=false;
+        QTimer::singleShot(1500,&window,[]{if(auto *dialog=qobject_cast<QDialog*>(QApplication::activeModalWidget())) dialog->reject();});
+        QTimer::singleShot(60,&window,[&] {
+            auto *dialog=qobject_cast<QDialog*>(QApplication::activeModalWidget());QVERIFY(dialog);
+            auto *theme=dialog->findChild<QCheckBox*>("checkNewUI");QVERIFY(theme);
+            QCOMPARE(dialog->findChild<QDialogButtonBox*>("buttonBox")->standardButtons(),
+                QDialogButtonBox::StandardButtons(QDialogButtonBox::Ok | QDialogButtonBox::Cancel));
+            QVERIFY(dialog->width()<800);
+            theme->setChecked(false);QVERIFY(window.styleSheet().isEmpty());QVERIFY(dialog->styleSheet().isEmpty());
+            theme->setChecked(true);QVERIFY(!window.styleSheet().isEmpty());QVERIFY(!dialog->styleSheet().isEmpty());
+            auto *enabled=dialog->findChild<QCheckBox*>("notificationsEnabled");QVERIFY(enabled);enabled->setChecked(false);
+            QVERIFY(!dialog->findChild<QWidget*>("notificationCases")->isEnabled());enabled->setChecked(true);
+            auto *errors=dialog->findChild<QCheckBox*>("notify_error");errors->setChecked(false);
+            QVERIFY(!dialog->findChild<QSpinBox*>("notify_seconds_error")->isEnabled());
+            if(!qEnvironmentVariable("POLAR_SCREENSHOT_DIR").isEmpty()) dialog->grab().save(qEnvironmentVariable("POLAR_SCREENSHOT_DIR")+"/options.png");
+            theme->setChecked(false);visited=true;
+            dialog->reject();
+        });
+        QVERIFY(QMetaObject::invokeMethod(&window,"showOptionsDialog",Qt::DirectConnection));QVERIFY(visited);QVERIFY(AppSettings::useNewUI);
+    }
+    void mouseFocusKeepsKeyboardAccess() {
+        AppStyle::installFocusStyle();QWidget host;auto *layout=new QVBoxLayout(&host);
+        auto *first=new QCheckBox("First",&host);auto *second=new SwitchButton("Second",&host);
+        layout->addWidget(first);layout->addWidget(second);host.show();QTest::qWait(20);
+        QTest::mouseClick(first,Qt::LeftButton);QVERIFY(!first->property("keyboardFocus").toBool());
+        QTest::keyClick(first,Qt::Key_Tab);QVERIFY(second->hasFocus());QVERIFY(second->property("keyboardFocus").toBool());
+        QTest::keyClick(second,Qt::Key_Space);QVERIFY(second->isChecked());
+    }
+    void releaseVersionsAndDownloadIntegrity() {
+        QVERIFY(Updater::isNewerVersion("v1.5.1","v1.5.0"));QVERIFY(Updater::isNewerVersion("v1.10.0","v1.9.9"));
+        QVERIFY(!Updater::isNewerVersion("v1.4.4","v1.5.0"));QVERIFY(!Updater::isNewerVersion("v1.5.0","v1.5.0"));
+        QVERIFY(!Updater::isNewerVersion("A new release","v1.5.0"));
+        QTemporaryDir dir;QFile file(dir.filePath("candidate.exe"));QVERIFY(file.open(QIODevice::WriteOnly));
+        QByteArray data(128,'\0');data[0]='M';data[1]='Z';qToLittleEndian<quint32>(64,reinterpret_cast<uchar*>(data.data()+0x3c));data.replace(64,4,QByteArray("PE\0\0",4));
+        file.write(data);file.close();const auto digest="sha256:"+QString::fromLatin1(QCryptographicHash::hash(data,QCryptographicHash::Sha256).toHex());
+        QVERIFY(Updater::validExecutable(file.fileName(),128,digest));QVERIFY(!Updater::validExecutable(file.fileName(),127,digest));
+        QVERIFY(!Updater::validExecutable(file.fileName(),128,"sha256:"+QString(64,'0')));
+        QVERIFY(file.open(QIODevice::WriteOnly));file.write("<html>Download failed</html>");file.close();QVERIFY(!Updater::validExecutable(file.fileName(),0,{}));
+    }
+
+#ifdef Q_OS_WIN
+    void startShortcutChecksDirectoryAndRenamedExecutable() {
+        QTemporaryDir dir;StartMenuShortcut::setDirectoryForTests(dir.path());
+        const auto target=dir.filePath("Polar renamed.exe"),wrong=dir.filePath("Wrong.exe");
+        QVERIFY(QFile::copy(QCoreApplication::applicationFilePath(),target));
+        QVERIFY(QFile::copy(QCoreApplication::applicationFilePath(),wrong));
+        QCOMPARE(StartMenuShortcut::inspect(target),StartMenuShortcut::State::Missing);
+        QVERIFY(StartMenuShortcut::create(wrong));QCOMPARE(StartMenuShortcut::inspect(target),StartMenuShortcut::State::Invalid);
+        QVERIFY(StartMenuShortcut::create(target));QCOMPARE(StartMenuShortcut::inspect(target),StartMenuShortcut::State::Valid);
+        QFile::remove(target);QCOMPARE(StartMenuShortcut::inspect(target),StartMenuShortcut::State::Invalid);
+        StartMenuShortcut::setDirectoryForTests({});
+    }
+    void windowsExecutableReplacementAndRollback_data() {
+        QTest::addColumn<bool>("invalidImage");QTest::newRow("same-name replacement")<<false;QTest::newRow("restart failure rolls back")<<true;
+    }
+    void windowsExecutableReplacementAndRollback() {
+        QFETCH(bool,invalidImage);QTemporaryDir temporary;
+        const auto directory=temporary.filePath("Polar ü test's & space");QVERIFY(QDir().mkpath(directory));
+        const auto target=QDir(directory).filePath("Renamed Polar.exe");
+        const auto prefix=QDir(directory).filePath(".polar-update-"+QUuid::createUuid().toString(QUuid::WithoutBraces));
+        const auto helper=prefix+".exe",staged=prefix+".download",backup=prefix+".backup",manifest=prefix+".json";
+        const auto ready=QDir(directory).filePath("parent-ready"),release=ready+".release",probe=QDir(directory).filePath("restarted");
+        const auto executable=QCoreApplication::applicationFilePath();
+        QVERIFY(QFile::copy(executable,target));QVERIFY(QFile::copy(executable,helper));
+        if(invalidImage) {
+            QByteArray data(128,'\0');data[0]='M';data[1]='Z';qToLittleEndian<quint32>(64,reinterpret_cast<uchar*>(data.data()+0x3c));data.replace(64,4,QByteArray("PE\0\0",4));
+            QFile file(staged);QVERIFY(file.open(QIODevice::WriteOnly));file.write(data);
+        } else QVERIFY(QFile::copy(executable,staged));
+        QFile settings(QDir(directory).filePath("polar.json"));QVERIFY(settings.open(QIODevice::WriteOnly));settings.write("{\"identifier\":\"12345\",\"language\":\"fr_FR\"}");settings.close();
+        QProcess parent;parent.start(target,{"--polar-update-parent",ready});QVERIFY(parent.waitForStarted());QTRY_VERIFY(QFileInfo::exists(ready));
+        QJsonObject data{{"target",target},{"helper",helper},{"staged",staged},{"backup",backup},{"pid",qint64(parent.processId())},
+            {"size",QFileInfo(staged).size()},{"arguments",QJsonArray{"--polar-update-probe",probe}},{"shortcut",false}};
+        QFile file(manifest);QVERIFY(file.open(QIODevice::WriteOnly));file.write(QJsonDocument(data).toJson());file.close();
+        QProcess worker;worker.start(helper,{"--polar-apply-update",manifest});QVERIFY(worker.waitForStarted());
+        QFile allowExit(release);QVERIFY(allowExit.open(QIODevice::WriteOnly));allowExit.close();
+        QVERIFY(worker.waitForFinished(15000));QCOMPARE(worker.exitCode(),invalidImage?1:0);
+        QVERIFY(parent.waitForFinished(5000));QTRY_VERIFY_WITH_TIMEOUT(QFileInfo::exists(probe),5000);
+        QVERIFY(QFileInfo::exists(target));QVERIFY(Updater::validExecutable(target,QFileInfo(executable).size(),{}));
+        QVERIFY(settings.open(QIODevice::ReadOnly));QVERIFY(settings.readAll().contains("12345"));settings.close();
+        QFile result(QDir(directory).filePath("polar-update-result.json"));QVERIFY(result.open(QIODevice::ReadOnly));
+        QCOMPARE(QJsonDocument::fromJson(result.readAll()).object().value("ok").toBool(),!invalidImage);
+    }
+#endif
     void mainWindowStartupAndResources() {
         MainWindow window;window.show();QTest::qWait(80);
         QVERIFY(window.findChild<QWidget*>("tbEditionPicker"));
@@ -176,5 +369,17 @@ private slots:
     }
 
 };
-QTEST_MAIN(PolarTests)
+int main(int argc,char **argv) {
+    if(argc==3) {
+        const QString mode=QString::fromLocal8Bit(argv[1]),path=QString::fromLocal8Bit(argv[2]);
+        if(mode=="--polar-apply-update") {QCoreApplication helper(argc,argv);return Updater::applyStagedUpdate(path);}
+        if(mode=="--polar-update-probe") {QFile marker(path);return marker.open(QIODevice::WriteOnly)?0:1;}
+        if(mode=="--polar-update-parent") {
+            QCoreApplication app(argc,argv);QFile ready(path);if(!ready.open(QIODevice::WriteOnly)) return 1;ready.close();
+            QTimer poll;QObject::connect(&poll,&QTimer::timeout,&app,[&]{if(QFileInfo::exists(path+".release")) app.quit();});poll.start(25);
+            QTimer::singleShot(10000,&app,&QCoreApplication::quit);return app.exec();
+        }
+    }
+    QApplication app(argc,argv);PolarTests tests;return QTest::qExec(&tests,argc,argv);
+}
 #include "tst_polar.moc"

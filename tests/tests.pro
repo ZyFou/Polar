@@ -1,6 +1,7 @@
 QT += core gui widgets network charts uitools testlib
 CONFIG += testcase c++20 debug lrelease embed_translations
 CONFIG -= release
+DEFINES += POLAR_TESTING
 TARGET = polar_tests
 INCLUDEPATH += $$PWD/../src/core $$PWD/../src/network $$PWD/../src/ui
 SOURCES += $$files($$PWD/../src/core/*.cpp) $$files($$PWD/../src/network/*.cpp) $$files($$PWD/../src/ui/*.cpp) $$PWD/tst_polar.cpp
@@ -8,3 +9,4 @@ HEADERS += $$files($$PWD/../src/core/*.h) $$files($$PWD/../src/network/*.h) $$fi
 FORMS += $$PWD/../ui/mainwindow.ui
 RESOURCES += $$PWD/../resources.qrc
 TRANSLATIONS += $$files($$PWD/../translations/*.ts)
+win32: LIBS += -lole32 -luuid -lshell32
