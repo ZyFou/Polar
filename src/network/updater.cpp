@@ -164,10 +164,16 @@ int Updater::applyStagedUpdate(const QString &manifestPath) {
     if(!validExecutable(staged,data.value("size").toVariant().toLongLong(),data.value("digest").toString())) {report(false,"verification");return 1;}
     HANDLE parent=OpenProcess(SYNCHRONIZE|PROCESS_QUERY_LIMITED_INFORMATION,FALSE,DWORD(pid));
     if(parent) {
-        wchar_t name[32768]={};DWORD length=32768;
-        const bool matches=QueryFullProcessImageNameW(parent,0,name,&length)
-            && normalizedPath(QString::fromWCharArray(name)).compare(target,Qt::CaseInsensitive)==0;
-        const DWORD waited=matches?WaitForSingleObject(parent,60000):WAIT_FAILED;CloseHandle(parent);
+        // The parent can exit as soon as startDetached succeeds. Its retained process
+        // handle stays queryable for waiting even when its image name is no longer available.
+        DWORD waited=WaitForSingleObject(parent,0);
+        if(waited==WAIT_TIMEOUT) {
+            wchar_t name[32768]={};DWORD length=32768;
+            const bool matches=QueryFullProcessImageNameW(parent,0,name,&length)
+                && normalizedPath(QString::fromWCharArray(name)).compare(target,Qt::CaseInsensitive)==0;
+            waited=matches?WaitForSingleObject(parent,60000):WaitForSingleObject(parent,0);
+        }
+        CloseHandle(parent);
         if(waited!=WAIT_OBJECT_0) {report(false,"process");return 1;}
     } else if(GetLastError()!=ERROR_INVALID_PARAMETER) {report(false,"process");return 1;}
     const auto nativeTarget=QDir::toNativeSeparators(target),nativeStaged=QDir::toNativeSeparators(staged),nativeBackup=QDir::toNativeSeparators(backup);

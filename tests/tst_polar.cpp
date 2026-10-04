@@ -331,10 +331,13 @@ private slots:
         StartMenuShortcut::setDirectoryForTests({});
     }
     void windowsExecutableReplacementAndRollback_data() {
-        QTest::addColumn<bool>("invalidImage");QTest::newRow("same-name replacement")<<false;QTest::newRow("restart failure rolls back")<<true;
+        QTest::addColumn<bool>("invalidImage");QTest::addColumn<bool>("parentExited");
+        QTest::newRow("same-name replacement")<<false<<false;
+        QTest::newRow("parent already exited")<<false<<true;
+        QTest::newRow("restart failure rolls back")<<true<<true;
     }
     void windowsExecutableReplacementAndRollback() {
-        QFETCH(bool,invalidImage);QTemporaryDir temporary;
+        QFETCH(bool,invalidImage);QFETCH(bool,parentExited);QTemporaryDir temporary;
         const auto directory=temporary.filePath("Polar ü test's & space");QVERIFY(QDir().mkpath(directory));
         const auto target=QDir(directory).filePath("Renamed Polar.exe");
         const auto prefix=QDir(directory).filePath(".polar-update-"+QUuid::createUuid().toString(QUuid::WithoutBraces));
@@ -351,14 +354,19 @@ private slots:
         QJsonObject data{{"target",target},{"helper",helper},{"staged",staged},{"backup",backup},{"pid",qint64(parent.processId())},
             {"size",QFileInfo(staged).size()},{"arguments",QJsonArray{"--polar-update-probe",probe}},{"shortcut",false}};
         QFile file(manifest);QVERIFY(file.open(QIODevice::WriteOnly));file.write(QJsonDocument(data).toJson());file.close();
+        const auto allowParentExit=[&] {
+            QFile allowExit(release);return allowExit.open(QIODevice::WriteOnly);
+        };
+        if(parentExited) {QVERIFY(allowParentExit());QVERIFY(parent.waitForFinished(5000));}
         QProcess worker;worker.start(helper,{"--polar-apply-update",manifest});QVERIFY(worker.waitForStarted());
-        QFile allowExit(release);QVERIFY(allowExit.open(QIODevice::WriteOnly));allowExit.close();
+        if(!parentExited) {QTest::qWait(100);QVERIFY(allowParentExit());}
         QVERIFY(worker.waitForFinished(15000));
         QFile helperReport(QDir(directory).filePath("polar-update-result.json"));
         if(helperReport.open(QIODevice::ReadOnly)) qInfo().noquote()<<"Update helper result:"<<helperReport.readAll();
         else qInfo().noquote()<<"Update helper output:"<<worker.readAllStandardOutput()<<worker.readAllStandardError();
         QCOMPARE(worker.exitCode(),invalidImage?1:0);
-        QVERIFY(parent.waitForFinished(5000));QTRY_VERIFY_WITH_TIMEOUT(QFileInfo::exists(probe),5000);
+        if(!parentExited) QVERIFY(parent.waitForFinished(5000));
+        QTRY_VERIFY_WITH_TIMEOUT(QFileInfo::exists(probe),5000);
         QVERIFY(QFileInfo::exists(target));QVERIFY(Updater::validExecutable(target,QFileInfo(executable).size(),{}));
         QVERIFY(settings.open(QIODevice::ReadOnly));QVERIFY(settings.readAll().contains("12345"));settings.close();
         QFile result(QDir(directory).filePath("polar-update-result.json"));QVERIFY(result.open(QIODevice::ReadOnly));
