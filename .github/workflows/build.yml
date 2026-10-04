@@ -41,9 +41,10 @@ jobs:
         shell: cmd
         env:
           QT_QPA_PLATFORM: offscreen
+          QT_LOGGING_TO_CONSOLE: '1'
         run: |
           mkdir build\tests
           cd build\tests
           qmake ..\..\tests\tests.pro
           nmake
-          debug\polar_tests.exe
+          debug\polar_tests.exe -o -,txt
