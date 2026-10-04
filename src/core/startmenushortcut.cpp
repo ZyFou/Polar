@@ -37,9 +37,14 @@ QString path() {return QDir(directory()).filePath("Polar.lnk");}
 #endif
 StartMenuShortcut::State StartMenuShortcut::inspect(const QString &target) {
 #ifdef Q_OS_WIN
-    if(!QFileInfo::exists(path())) return State::Missing;
+    // QFileInfo follows Windows shortcuts; a dangling .lnk must remain repairable.
+    const auto nativeLink=QDir::toNativeSeparators(path());
+    if(GetFileAttributesW(reinterpret_cast<LPCWSTR>(nativeLink.utf16()))==INVALID_FILE_ATTRIBUTES) {
+        const auto error=GetLastError();
+        return error==ERROR_FILE_NOT_FOUND || error==ERROR_PATH_NOT_FOUND?State::Missing:State::Invalid;
+    }
     Link link;
-    if(!link.file || FAILED(link.file->Load(reinterpret_cast<LPCWSTR>(path().utf16()),STGM_READ))) return State::Invalid;
+    if(!link.file || FAILED(link.file->Load(reinterpret_cast<LPCWSTR>(nativeLink.utf16()),STGM_READ))) return State::Invalid;
     wchar_t resolved[32768] = {};
     if(FAILED(link.shell->GetPath(resolved,32768,nullptr,SLGP_RAWPATH))) return State::Invalid;
     const QFileInfo actual(QString::fromWCharArray(resolved)),expected(target);
@@ -63,7 +68,8 @@ bool StartMenuShortcut::create(const QString &target) {
         || FAILED(link.shell->SetWorkingDirectory(reinterpret_cast<LPCWSTR>(work.utf16())))
         || FAILED(link.shell->SetDescription(L"Polar"))
         || FAILED(link.shell->SetIconLocation(reinterpret_cast<LPCWSTR>(native.utf16()),0))) return false;
-    return SUCCEEDED(link.file->Save(reinterpret_cast<LPCWSTR>(path().utf16()),TRUE));
+    const auto nativeLink=QDir::toNativeSeparators(path());
+    return SUCCEEDED(link.file->Save(reinterpret_cast<LPCWSTR>(nativeLink.utf16()),TRUE));
 #else
     Q_UNUSED(target);return false;
 #endif

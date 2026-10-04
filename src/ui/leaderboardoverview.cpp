@@ -93,19 +93,31 @@ void LeaderboardOverview::refresh() {
             gap>0?s.recentRate:reference.recentRate,std::max(0.0,duration-std::max(s.lastHour,reference.lastHour))):Performance::unavailable;
         const auto pace=WtData::numbers(player.value("wins_pace"));
         const QString winsPace=pace.isEmpty()?QStringLiteral("—"):QString::number(pace.last(),'f',1);
-        auto *row=new QFrame;row->setObjectName("overviewRow");row->setAttribute(Qt::WA_TransparentForMouseEvents);
+        auto *row=qobject_cast<QFrame*>(list->itemWidget(list->item(i)));
+        if(!row) {row=new QFrame;row->setObjectName("overviewRow");row->setAttribute(Qt::WA_TransparentForMouseEvents);}
         const QString accent=rank==1?"#d4a721":rank==2?"#9aa6b2":rank==3?"#b87c44":selected?"#1a73e8":"#627386";
         const auto base=palette().base().color();
-        row->setStyleSheet(QString("QFrame#overviewRow { background:rgba(%1,%2,%3,205); border:1px solid rgba(128,128,128,50); border-left:4px solid %4; border-radius:6px; } QLabel { background:transparent; border:0; }")
-            .arg(base.red()).arg(base.green()).arg(base.blue()).arg(accent));
-        auto *cells=new QHBoxLayout(row);cells->setContentsMargins(12,6,12,6);cells->setSpacing(12);
+        const auto rowStyle=QString("QFrame#overviewRow { background:rgba(%1,%2,%3,205); border:1px solid rgba(128,128,128,50); border-left:4px solid %4; border-radius:6px; } QLabel { background:transparent; border:0; }")
+            .arg(base.red()).arg(base.green()).arg(base.blue()).arg(accent);
+        if(row->styleSheet()!=rowStyle) row->setStyleSheet(rowStyle);
+        auto *cells=qobject_cast<QHBoxLayout*>(row->layout());
+        if(!cells) {cells=new QHBoxLayout(row);cells->setContentsMargins(12,6,12,6);cells->setSpacing(12);}
+        int column=0;
         auto cell=[&](const QString &title,const QString &value,int width,const QString &color=QString()) {
-            auto *box=new QWidget(row);auto *stack=new QVBoxLayout(box);stack->setContentsMargins(0,0,0,0);stack->setSpacing(2);
-            auto *heading=new QLabel(title,box);heading->setStyleSheet("font-size:10px; color:palette(mid);");stack->addWidget(heading);
-            auto *label=new QLabel(value,box);label->setTextFormat(Qt::PlainText);label->setWordWrap(true);
-            label->setStyleSheet("font-weight:bold;"+(color.isEmpty()?QString():"color:"+color+";"));stack->addWidget(label);
-            if(width>0) box->setFixedWidth(width);else box->setMinimumWidth(100);
-            cells->addWidget(box,width>0?0:1);
+            const auto name=QString("column%1").arg(column++);
+            auto *box=row->findChild<QWidget*>(name,Qt::FindDirectChildrenOnly);
+            if(!box) {
+                box=new QWidget(row);box->setObjectName(name);
+                auto *stack=new QVBoxLayout(box);stack->setContentsMargins(0,0,0,0);stack->setSpacing(2);
+                auto *heading=new QLabel(box);heading->setObjectName("caption");heading->setStyleSheet("font-size:10px; color:palette(mid);");stack->addWidget(heading);
+                auto *label=new QLabel(box);label->setObjectName("value");label->setTextFormat(Qt::PlainText);label->setWordWrap(true);stack->addWidget(label);
+                if(width>0) box->setFixedWidth(width);else box->setMinimumWidth(100);
+                cells->addWidget(box,width>0?0:1);
+            }
+            box->findChild<QLabel*>("caption")->setText(title);
+            auto *label=box->findChild<QLabel*>("value");label->setText(value);
+            const auto valueStyle="font-weight:bold;"+(color.isEmpty()?QString():"color:"+color+";");
+            if(label->styleSheet()!=valueStyle) label->setStyleSheet(valueStyle);
         };
         cell(tr("Rank"),QString("#%1").arg(rank),40,accent);
         cell(tr("Player"),player.value("name").toString(),0);

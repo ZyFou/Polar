@@ -243,6 +243,7 @@ private slots:
         QStringList values;for(auto *label:row->findChildren<QLabel*>()) values<<label->text();
         QVERIFY(values.join(' ').contains("699")); // 219M + 10M/h over 48 hours, with observed pace scenario.
         view.findChild<QDoubleSpinBox*>()->setValue(1);
+        QCOMPARE(list->itemWidget(first),row);
         values.clear();for(auto *label:list->itemWidget(first)->findChildren<QLabel*>())values<<label->text();
         QVERIFY(values.join(' ').contains("689"));
         if(!qEnvironmentVariable("POLAR_SCREENSHOT_DIR").isEmpty()) view.grab().save(qEnvironmentVariable("POLAR_SCREENSHOT_DIR")+"/leaderboard-overview.png");
@@ -352,7 +353,11 @@ private slots:
         QFile file(manifest);QVERIFY(file.open(QIODevice::WriteOnly));file.write(QJsonDocument(data).toJson());file.close();
         QProcess worker;worker.start(helper,{"--polar-apply-update",manifest});QVERIFY(worker.waitForStarted());
         QFile allowExit(release);QVERIFY(allowExit.open(QIODevice::WriteOnly));allowExit.close();
-        QVERIFY(worker.waitForFinished(15000));QCOMPARE(worker.exitCode(),invalidImage?1:0);
+        QVERIFY(worker.waitForFinished(15000));
+        QFile helperReport(QDir(directory).filePath("polar-update-result.json"));
+        if(helperReport.open(QIODevice::ReadOnly)) qInfo().noquote()<<"Update helper result:"<<helperReport.readAll();
+        else qInfo().noquote()<<"Update helper output:"<<worker.readAllStandardOutput()<<worker.readAllStandardError();
+        QCOMPARE(worker.exitCode(),invalidImage?1:0);
         QVERIFY(parent.waitForFinished(5000));QTRY_VERIFY_WITH_TIMEOUT(QFileInfo::exists(probe),5000);
         QVERIFY(QFileInfo::exists(target));QVERIFY(Updater::validExecutable(target,QFileInfo(executable).size(),{}));
         QVERIFY(settings.open(QIODevice::ReadOnly));QVERIFY(settings.readAll().contains("12345"));settings.close();

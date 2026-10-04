@@ -43,6 +43,15 @@ QVersionNumber version(QString text) {
 bool sameDirectory(const QString &path,const QString &directory) {
     return QFileInfo(path).absolutePath().compare(QDir(directory).absolutePath(),Qt::CaseInsensitive)==0;
 }
+#ifdef Q_OS_WIN
+QString normalizedPath(const QString &path) {
+    const QFileInfo file(QDir::fromNativeSeparators(path));
+    const auto canonical=file.canonicalFilePath();
+    if(!canonical.isEmpty()) return canonical;
+    const auto parent=QFileInfo(file.absolutePath()).canonicalFilePath();
+    return QDir(parent.isEmpty()?file.absolutePath():parent).filePath(file.fileName());
+}
+#endif
 }
 Updater::Updater(QObject *parent) : QObject(parent),manager(this) {
     checkTimer.setInterval(60*60*1000);
@@ -139,22 +148,25 @@ int Updater::applyStagedUpdate(const QString &manifestPath) {
 #else
     QFile manifest(manifestPath);if(!manifest.open(QIODevice::ReadOnly)) return 1;
     const auto data=QJsonDocument::fromJson(manifest.readAll()).object();manifest.close();
-    const auto helper=QCoreApplication::applicationFilePath(),directory=QFileInfo(helper).absolutePath();
+    const auto helper=normalizedPath(QCoreApplication::applicationFilePath()),directory=QFileInfo(helper).absolutePath();
     const auto prefix=QFileInfo(helper).absolutePath()+"/"+QFileInfo(helper).completeBaseName();
-    const auto target=data.value("target").toString(),staged=data.value("staged").toString(),backup=data.value("backup").toString();
+    const auto target=normalizedPath(data.value("target").toString()),staged=normalizedPath(data.value("staged").toString()),backup=normalizedPath(data.value("backup").toString());
     const auto pid=data.value("pid").toVariant().toULongLong();
-    if(!QFileInfo(helper).fileName().startsWith(".polar-update-") || !sameDirectory(target,directory)
-        || QDir::cleanPath(manifestPath)!=prefix+".json" || staged!=prefix+".download" || backup!=prefix+".backup"
-        || QFileInfo(target).suffix().compare("exe",Qt::CaseInsensitive)!=0 || !pid || pid>MAXDWORD || pid==GetCurrentProcessId()) return 1;
     const auto report=[&](bool ok,const QString &error) {
         writeJson(QDir(directory).filePath("polar-update-result.json"),{{"ok",ok},{"error",error},{"helper",helper},{"manifest",manifestPath},{"staged",staged},{"backup",backup}});
     };
+    if(!QFileInfo(helper).fileName().startsWith(".polar-update-") || !sameDirectory(target,directory)
+        || normalizedPath(manifestPath).compare(prefix+".json",Qt::CaseInsensitive)!=0
+        || staged.compare(prefix+".download",Qt::CaseInsensitive)!=0 || backup.compare(prefix+".backup",Qt::CaseInsensitive)!=0
+        || QFileInfo(target).suffix().compare("exe",Qt::CaseInsensitive)!=0) {report(false,"manifest");return 1;}
+    if(!pid || pid>MAXDWORD || pid==GetCurrentProcessId()) {report(false,"pid");return 1;}
+    QStringList arguments;for(const auto &arg:data.value("arguments").toArray()) arguments.append(arg.toString());
     if(!validExecutable(staged,data.value("size").toVariant().toLongLong(),data.value("digest").toString())) {report(false,"verification");return 1;}
     HANDLE parent=OpenProcess(SYNCHRONIZE|PROCESS_QUERY_LIMITED_INFORMATION,FALSE,DWORD(pid));
     if(parent) {
         wchar_t name[32768]={};DWORD length=32768;
         const bool matches=QueryFullProcessImageNameW(parent,0,name,&length)
-            && QDir::fromNativeSeparators(QString::fromWCharArray(name)).compare(QDir::fromNativeSeparators(target),Qt::CaseInsensitive)==0;
+            && normalizedPath(QString::fromWCharArray(name)).compare(target,Qt::CaseInsensitive)==0;
         const DWORD waited=matches?WaitForSingleObject(parent,60000):WAIT_FAILED;CloseHandle(parent);
         if(waited!=WAIT_OBJECT_0) {report(false,"process");return 1;}
     } else if(GetLastError()!=ERROR_INVALID_PARAMETER) {report(false,"process");return 1;}
@@ -168,10 +180,9 @@ int Updater::applyStagedUpdate(const QString &manifestPath) {
     if(!replaced) {
         if(!QFileInfo::exists(target) && QFileInfo::exists(backup))
             MoveFileExW(reinterpret_cast<LPCWSTR>(nativeBackup.utf16()),reinterpret_cast<LPCWSTR>(nativeTarget.utf16()),MOVEFILE_WRITE_THROUGH);
-        report(false,"replace");QProcess::startDetached(target,{},directory);return 1;
+        report(false,"replace");QProcess::startDetached(target,arguments,directory);return 1;
     }
     if(data.value("shortcut").toBool() && StartMenuShortcut::inspect(target)!=StartMenuShortcut::State::Missing) StartMenuShortcut::create(target);
-    QStringList arguments;for(const auto &arg:data.value("arguments").toArray()) arguments.append(arg.toString());
     report(true,{});
     if(!QProcess::startDetached(target,arguments,directory)) {
         const bool restored=ReplaceFileW(reinterpret_cast<LPCWSTR>(nativeTarget.utf16()),reinterpret_cast<LPCWSTR>(nativeBackup.utf16()),nullptr,0,nullptr,nullptr);
