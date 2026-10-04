@@ -17,5 +17,6 @@ QVector<Sample> samples(const QJsonObject &player);
 Summary summarize(const QVector<Sample> &samples, double windowHours = 2.0, double maxGapHours = 0.75);
 double project(const Summary &summary, double remainingHours, double plannedPause = 0, bool observedHabit = false);
 double catchHours(double gap, double pursuerRate, double leaderRate, double remainingHours);
+double historicalProjectionByDate(const QVector<qint64> &dates, const QVector<qint64> &scores, qint64 targetDate);
 double historicalProjection(const QVector<int> &editions, const QVector<qint64> &scores, int targetEdition);
 }

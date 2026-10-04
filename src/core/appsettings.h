@@ -36,6 +36,12 @@ public:
     static int     dateFormatIndex;               // NEW: 0=locale, 1=dd/MM/yyyy HH:mm, 2=MM/dd/yyyy HH:mm, 3=yyyy-MM-dd HH:mm
     static double  durationGlo;                   // NEW: Durée théorique pour GLO
     static double  durationJp;                     // NEW: Durée théorique pour JP
+    static bool notificationsEnabled;
+    static QJsonObject notificationOptions;
+    static bool expandedLeaderboard;
+    static bool leaderboardPaceBackground;
+    static bool notificationEnabled(const QString &kind);
+    static int notificationDuration(const QString &kind);
 
 };
 

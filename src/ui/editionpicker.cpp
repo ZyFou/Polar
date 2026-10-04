@@ -4,6 +4,8 @@
 #include <QKeyEvent>
 #include <QWheelEvent>
 #include <cmath>
+#include <QTransform>
+#include <QFontMetricsF>
 
 EditionPickerWidget::EditionPickerWidget(QWidget *parent) : QWidget(parent) {
     setMinimumSize(120,36);
@@ -26,7 +28,7 @@ void EditionPickerWidget::setEditions(const QVector<int> &list,int selectedEditi
 }
 void EditionPickerWidget::paintEvent(QPaintEvent *) {
     QPainter p(this); p.setRenderHint(QPainter::Antialiasing);
-    p.setPen(QPen(hasFocus()?palette().highlight().color():QColor(255,255,255,35),1));
+    p.setPen(QPen(hasFocus() && property("keyboardFocus").toBool()?palette().highlight().color():QColor(255,255,255,35),1));
     p.setBrush(QColor(30,30,30,180));
     p.drawRoundedRect(rect().adjusted(1,1,-1,-1),8,8);
     p.setClipRect(rect().adjusted(2,2,-2,-2));
@@ -35,8 +37,24 @@ void EditionPickerWidget::paintEvent(QPaintEvent *) {
         const qreal x=width()/2.0+(i-index)*step+offset;
         const qreal focus=qMax(0.0,1.0-std::abs(x-width()/2.0)/step);
         QFont f=font(); f.setPixelSize(qMax(10,int(height()*(0.28+0.10*focus)))); f.setBold(focus>0.6); p.setFont(f);
-        p.setPen(QColor(255,255,255,int(110+145*focus)));
-        p.drawText(QRectF(x-step/2,0,step,height()),Qt::AlignCenter,editions[i]==0?tr("Current"):QString::number(editions[i]));
+        // Project the side faces around a vertical axis; drag and easing share the same angle.
+        const qreal angle=qBound(-68.0,(x-width()/2.0)/step*55.0,68.0);
+        p.save();p.translate(x,height()/2.0);
+        QTransform perspective;perspective.rotate(angle,Qt::YAxis);
+        p.setTransform(perspective,true);
+        const QRectF card(-step*0.46,-height()*0.40,step*0.92,height()*0.80);
+        const auto text=editions[i]==0?tr("Current"):QString::number(editions[i]);
+        while(f.pixelSize()>10 && QFontMetricsF(f).horizontalAdvance(text)>card.width()-10) {
+            f.setPixelSize(f.pixelSize()-1);
+        }
+        p.setFont(f);
+        QLinearGradient surface(card.topLeft(),card.topRight());
+        surface.setColorAt(0,QColor(255,255,255,5+int(20*focus)));
+        surface.setColorAt(1,QColor(255,255,255,2+int(10*focus)));
+        p.setBrush(surface);p.setPen(QColor(255,255,255,int(15+35*focus)));p.drawRoundedRect(card,5,5);
+        p.setPen(QColor(255,255,255,int(100+155*focus)));
+        p.drawText(card,Qt::AlignCenter,text);
+        p.restore();
     }
 }
 void EditionPickerWidget::settle() {
@@ -72,6 +90,14 @@ void EditionPickerWidget::keyPressEvent(QKeyEvent *e) {
     else if(e->key()==Qt::Key_Right) select(index+1);
     else if(e->key()==Qt::Key_Home) select(0);
     else QWidget::keyPressEvent(e);
+}
+void EditionPickerWidget::changeEvent(QEvent *event) {
+    if(event->type()==QEvent::LanguageChange) {
+        setAccessibleName(tr("WT edition"));
+        setToolTip(tr("Drag, scroll or use arrow keys. Current always requests tournament 0."));
+        update();
+    }
+    QWidget::changeEvent(event);
 }
 void EditionPickerWidget::wheelEvent(QWheelEvent *e) {
     wheelDelta+=e->angleDelta().y();

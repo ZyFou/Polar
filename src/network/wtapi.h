@@ -17,6 +17,10 @@ public:
     static WtApi &instance();
     static QUrl endpoint(int edition, const QString &resource, const QString &region,
                          const QUrlQuery &query = {});
+    static QUrl archiveCatalogUrl();
+#ifdef POLAR_TESTING
+    static void setBaseUrlForTests(const QUrl &baseUrl);
+#endif
     void get(const QUrl &url, QObject *context, Callback callback, int ttlSeconds = 60);
 private:
     struct CacheEntry { QByteArray bytes; qint64 inserted; };

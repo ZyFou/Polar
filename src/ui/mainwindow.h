@@ -2,6 +2,7 @@
 #define MAINWINDOW_H
 
 #include <QMainWindow>
+#include <QMap>
 #include <QJsonDocument>
 #include <QTranslator>
 #include "updater.h"
@@ -40,6 +41,9 @@ class QProgressDialog;     // NEW
 class QGraphicsView;
 class QListWidget;
 class QComboBox;
+class NotificationCenter;
+class LeaderboardOverview;
+class SwitchButton;
 
 class MainWindow : public QMainWindow
 {
@@ -49,6 +53,9 @@ public:
     MainWindow(QWidget *parent = nullptr);
     ~MainWindow();
     double remainingTournamentHours() const;
+    void notify(const QString &kind,const QString &message);
+    void leaderboardSnapshotUpdated(const QJsonArray &players);
+    void leaderboardPlayerSelected(const QJsonObject &player);
 
 protected:
     QMenu* menu1;
@@ -136,7 +143,12 @@ private:
     void hideEasterEgg();
 
     // Créer un menu
-    QStackedWidget *stackedWidget;
+    QStackedWidget *stackedWidget = nullptr;
+    NotificationCenter *notifications = nullptr;
+    LeaderboardOverview *leaderboardOverview = nullptr;
+    SwitchButton *leaderboardSwitch = nullptr;
+    QStackedWidget *leaderboardViews = nullptr;
+    QString offeredUpdateVersion;
     QLabel *labelDynamic;
 
 
@@ -145,7 +157,7 @@ private:
     QTranslator m_translatorQt; // contains the translations for qt
     QString m_currLang; // contains the currently loaded language
     QString m_langPath; // Path of language files. This is always fixed to /languages.
-    Updater *updater;
+    Updater *updater = nullptr;
 
     // Tips rotation members
     QGraphicsOpacityEffect* tipsEffect = nullptr;
@@ -221,6 +233,9 @@ private:
 
 
     // Cached times (epoch seconds)
+    QVector<int> archiveEditions;
+    void estimateRankFromHistory(int rank,const QMap<int,qint64> &starts,quint64 generation,
+                                 const QString &region,int requestedEdition);
     quint64 metadataGeneration = 0;
     quint64 graphGeneration = 0;
     quint64 rankGeneration = 0, top100Generation = 0, addPlayerGeneration = 0, comparisonGeneration = 0;

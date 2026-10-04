@@ -63,5 +63,8 @@ INCLUDEPATH += src/core src/network src/ui
 
 HEADERS += src/core/wtdata.h src/core/performanceanalysis.h src/network/wtapi.h src/ui/editionpicker.h
 SOURCES += src/core/wtdata.cpp src/core/performanceanalysis.cpp src/network/wtapi.cpp src/ui/editionpicker.cpp
-HEADERS += src/ui/raceanalysisdialog.h
-SOURCES += src/ui/raceanalysisdialog.cpp
+HEADERS += src/core/startmenushortcut.h src/ui/appstyle.h src/ui/switchbutton.h src/ui/notificationcenter.h
+SOURCES += src/core/startmenushortcut.cpp src/ui/appstyle.cpp src/ui/switchbutton.cpp src/ui/notificationcenter.cpp
+win32: LIBS += -lole32 -luuid -lshell32
+HEADERS += src/ui/listtransition.h src/ui/leaderboardoverview.h
+SOURCES += src/ui/listtransition.cpp src/ui/leaderboardoverview.cpp

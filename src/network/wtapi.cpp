@@ -5,13 +5,19 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 
+namespace { QUrl apiBaseUrl("https://dokkan-wt.info"); }
+QUrl WtApi::archiveCatalogUrl() {return apiBaseUrl.resolved(QUrl("/older_editions"));}
+#ifdef POLAR_TESTING
+void WtApi::setBaseUrlForTests(const QUrl &url) {apiBaseUrl=url;}
+#endif
+
 WtApi::WtApi(QObject *parent) : QObject(parent), manager(this) { clock.start(); }
 WtApi &WtApi::instance() {
     static WtApi *api = new WtApi(QCoreApplication::instance());
     return *api;
 }
 QUrl WtApi::endpoint(int edition, const QString &resource, const QString &region, const QUrlQuery &query) {
-    QUrl url(QStringLiteral("https://dokkan-wt.info/api/%1/%2").arg(qMax(0,edition)).arg(resource));
+    QUrl url=apiBaseUrl.resolved(QUrl(QStringLiteral("/api/%1/%2").arg(qMax(0,edition)).arg(resource)));
     auto q=query;
     if (region=="JP" || region=="Jap") q.addQueryItem("region", "JP");
     url.setQuery(q);

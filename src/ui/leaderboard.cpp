@@ -1,3 +1,4 @@
+#include "listtransition.h"
 #include "wtapi.h"
 #include "wtdata.h"
 #include "performanceanalysis.h"
@@ -717,15 +718,15 @@ void Leaderboard::onRefreshClicked(MainWindow *this_, QListWidget *playerList)
     if(generation!=refreshGeneration || region!=AppSettings::region || edition!=AppSettings::selectedEdition) return;
     auto ladder=WtData::normalize(QJsonDocument::fromJson(bytes),"top");
     if(!error.isEmpty() || !ladder.value("top").isArray()) {
-        playerList->setToolTip(QObject::tr("Refresh failed; previous snapshot retained. %1").arg(error));return;
+        playerList->setToolTip(tr("Actualisation impossible. Les données précédentes sont conservées."));
+        this_->notify("error",tr("Actualisation impossible. Les données précédentes sont conservées."));return;
     }
     if(AppSettings::hideNegativeTimes) WtData::filterNegativeHours(ladder);
     QString selectedId;
     if(auto *selected=playerList->currentItem()) selectedId=selected->data(Qt::UserRole).toJsonObject().value("id").toVariant().toString();
     const QString baseName=Leaderboard::currentSelectedName;
     const auto overlays=Leaderboard::overlayNames;
-    playerList->setUpdatesEnabled(false);
-    playerList->clear();
+
     playerList->setToolTip(QObject::tr("Snapshot received %1").arg(QDateTime::currentDateTime().toString("HH:mm:ss")));
     playerList->setUniformItemSizes(true);
     playerList->setSpacing(3);
@@ -765,6 +766,8 @@ void Leaderboard::onRefreshClicked(MainWindow *this_, QListWidget *playerList)
         snapshotRows.clear();
         snapshotRows.reserve(rows.size());
 
+        QVector<QJsonObject> displayPlayers;
+        QVector<QWidget*> rowWidgets;
         for (int i = 0; i < rows.size(); ++i) {
             const auto& r = rows[i];
 
@@ -816,15 +819,15 @@ void Leaderboard::onRefreshClicked(MainWindow *this_, QListWidget *playerList)
                 heavyFarm
             );
 
-            auto* item = new QListWidgetItem(playerList);
-            item->setData(Qt::UserRole, r.obj);
-            item->setSizeHint(QSize(playerList->viewport()->width(), 80));
-            playerList->addItem(item);
-            playerList->setItemWidget(item, widget);
+            displayPlayers.append(r.obj);rowWidgets.append(widget);
 
             // snapshot item
             snapshotRows.push_back({r.rank, r.name, r.lastPoints, r.pointsList, r.obj});
         }
+
+        ListTransition::reconcile(playerList,displayPlayers,[&rowWidgets](int i){return rowWidgets[i];},80);
+        this_->leaderboardSnapshotUpdated(ladder.value("top").toArray());
+        this_->notify("refresh",tr("Classement actualisé."));
 
         // Fix: disconnect only what we rewire (avoid breaking other handlers)
         QObject::disconnect(playerList, &QListWidget::itemClicked, nullptr, nullptr);
@@ -958,6 +961,7 @@ void Leaderboard::affichergraphiqueettexte(MainWindow * this_, QJsonObject user,
     int baseRank = last_ranks.toInt();
     const QString name = user["name"].toString();
     Leaderboard::currentSelectedName = name; // pour auto-refresh
+    this_->leaderboardPlayerSelected(user);
     std::cout << "Utilisateur sélectionné : " << name.toStdString() << std::endl;
 
     QString ydata = "wins_pace";

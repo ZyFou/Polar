@@ -35,7 +35,7 @@
     <string notr="true">border: 0;</string>
    </property>
    <property name="frameShape">
-    <enum>QFrame::Shape::NoFrame</enum>
+    <enum>QFrame::NoFrame</enum>
    </property>
   </widget>
   <widget class="QGroupBox" name="group_infos">
@@ -51,7 +51,7 @@
     <string>Infos</string>
    </property>
    <property name="alignment">
-    <set>Qt::AlignmentFlag::AlignCenter</set>
+    <set>Qt::AlignCenter</set>
    </property>
    <layout class="QHBoxLayout" name="layout_infos">
     <property name="spacing">
@@ -81,7 +81,7 @@
        <string/>
       </property>
       <property name="alignment">
-       <set>Qt::AlignmentFlag::AlignLeading|Qt::AlignmentFlag::AlignLeft|Qt::AlignmentFlag::AlignTop</set>
+       <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignTop</set>
       </property>
       <property name="wordWrap">
        <bool>false</bool>
@@ -100,7 +100,7 @@
        <string/>
       </property>
       <property name="alignment">
-       <set>Qt::AlignmentFlag::AlignRight|Qt::AlignmentFlag::AlignTop|Qt::AlignmentFlag::AlignTrailing</set>
+       <set>Qt::AlignRight|Qt::AlignTop|Qt::AlignTrailing</set>
       </property>
       <property name="wordWrap">
        <bool>false</bool>
@@ -122,7 +122,7 @@
     <string>Infos Moyenne</string>
    </property>
    <property name="alignment">
-    <set>Qt::AlignmentFlag::AlignCenter</set>
+    <set>Qt::AlignCenter</set>
    </property>
    <layout class="QHBoxLayout" name="layout_avg">
     <property name="spacing">
@@ -152,7 +152,7 @@
        <string/>
       </property>
       <property name="alignment">
-       <set>Qt::AlignmentFlag::AlignLeading|Qt::AlignmentFlag::AlignLeft|Qt::AlignmentFlag::AlignTop</set>
+       <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignTop</set>
       </property>
       <property name="wordWrap">
        <bool>false</bool>
@@ -171,7 +171,7 @@
        <string/>
       </property>
       <property name="alignment">
-       <set>Qt::AlignmentFlag::AlignRight|Qt::AlignmentFlag::AlignTop|Qt::AlignmentFlag::AlignTrailing</set>
+       <set>Qt::AlignRight|Qt::AlignTop|Qt::AlignTrailing</set>
       </property>
       <property name="wordWrap">
        <bool>false</bool>
@@ -193,7 +193,7 @@
     <string>Gap</string>
    </property>
    <property name="alignment">
-    <set>Qt::AlignmentFlag::AlignCenter</set>
+    <set>Qt::AlignCenter</set>
    </property>
    <layout class="QHBoxLayout" name="layout_gap">
     <property name="spacing">
@@ -223,7 +223,7 @@
        <string/>
       </property>
       <property name="alignment">
-       <set>Qt::AlignmentFlag::AlignLeading|Qt::AlignmentFlag::AlignLeft|Qt::AlignmentFlag::AlignTop</set>
+       <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignTop</set>
       </property>
       <property name="wordWrap">
        <bool>false</bool>
@@ -242,7 +242,7 @@
        <string/>
       </property>
       <property name="alignment">
-       <set>Qt::AlignmentFlag::AlignRight|Qt::AlignmentFlag::AlignTop|Qt::AlignmentFlag::AlignTrailing</set>
+       <set>Qt::AlignRight|Qt::AlignTop|Qt::AlignTrailing</set>
       </property>
       <property name="wordWrap">
        <bool>false</bool>
@@ -293,7 +293,7 @@
     <string>Bienvenue sur le leaderboard !</string>
    </property>
    <property name="alignment">
-    <set>Qt::AlignmentFlag::AlignCenter</set>
+    <set>Qt::AlignCenter</set>
    </property>
   </widget>
   <widget class="QLabel" name="confirm_copy">
@@ -309,7 +309,7 @@
     <string/>
    </property>
    <property name="alignment">
-    <set>Qt::AlignmentFlag::AlignCenter</set>
+    <set>Qt::AlignCenter</set>
    </property>
   </widget>
   <widget class="QPushButton" name="copy_graph">

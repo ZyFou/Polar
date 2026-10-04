@@ -75,3 +75,19 @@ double Performance::historicalProjection(const QVector<int> &editions,const QVec
     const double slope=(n*sxy-sx*sy)/denominator;
     return std::max(0.0,(sy-slope*sx)/n);
 }
+
+// Center timestamps at the target date to avoid loss of precision with epoch values.
+double Performance::historicalProjectionByDate(const QVector<qint64> &dates,const QVector<qint64> &scores,qint64 target) {
+    if(target<=0 || dates.size()!=scores.size()) return unavailable;
+    double sx=0,sy=0,sxx=0,sxy=0;int n=0;
+    for(int i=0;i<dates.size();++i) {
+        if(dates[i]<=0 || dates[i]>=target || scores[i]<0) continue;
+        const double x=(dates[i]-target)/86400.0,y=double(scores[i]);
+        sx+=x;sy+=y;sxx+=x*x;sxy+=x*y;++n;
+    }
+    if(!n) return unavailable;
+    const double denominator=n*sxx-sx*sx;
+    if(n==1 || denominator<=0) return sy/n;
+    const double slope=(n*sxy-sx*sy)/denominator;
+    return std::max(0.0,(sy-slope*sx)/n);
+}

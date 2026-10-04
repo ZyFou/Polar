@@ -4,6 +4,7 @@
 #include <functional>
 
 class EditionPickerWidget : public QWidget {
+    Q_OBJECT
 public:
     explicit EditionPickerWidget(QWidget *parent = nullptr);
     void setOnChanged(std::function<void(int)> callback);
@@ -11,6 +12,7 @@ public:
     QSize sizeHint() const override { return {220,54}; }
 protected:
     void paintEvent(QPaintEvent *) override;
+    void changeEvent(QEvent *) override;
     void mousePressEvent(QMouseEvent *) override;
     void mouseMoveEvent(QMouseEvent *) override;
     void mouseReleaseEvent(QMouseEvent *) override;

@@ -27,6 +27,22 @@ bool    AppSettings::updateStartShortcutOnUpgrade = true;
 int     AppSettings::dateFormatIndex = 0; // NEW: default = locale
 double  AppSettings::durationGlo = 71.5;
 double  AppSettings::durationJp = 58.5;
+bool AppSettings::notificationsEnabled = true;
+QJsonObject AppSettings::notificationOptions;
+bool AppSettings::expandedLeaderboard = false;
+bool AppSettings::leaderboardPaceBackground = true;
+
+bool AppSettings::notificationEnabled(const QString &kind)
+{
+    return notificationsEnabled && notificationOptions.value(kind).toObject()
+        .value("enabled").toBool(kind != "refresh");
+}
+
+int AppSettings::notificationDuration(const QString &kind)
+{
+    return qBound(2, notificationOptions.value(kind).toObject()
+        .value("seconds").toInt(kind == "update" ? 30 : 8), 120);
+}
 
 // Chemin absolu: <applicationDirPath>/polar.json
 QString AppSettings::configPath()
@@ -69,6 +85,10 @@ void AppSettings::load()
     dateFormatIndex = qBound(0, o.value("dateFormatIndex").toInt(dateFormatIndex), 3);
     durationGlo = o.value(QStringLiteral("durationGlo")).toDouble(AppSettings::durationGlo);
     durationJp = o.value(QStringLiteral("durationJp")).toDouble(AppSettings::durationJp);
+    notificationsEnabled = o.value("notificationsEnabled").toBool(true);
+    notificationOptions = o.value("notificationOptions").toObject();
+    expandedLeaderboard = o.value("expandedLeaderboard").toBool(false);
+    leaderboardPaceBackground = o.value("leaderboardPaceBackground").toBool(true);
 }
 
 void AppSettings::save()
@@ -92,6 +112,10 @@ void AppSettings::save()
     o.insert(QStringLiteral("dateFormatIndex"), dateFormatIndex);
     o.insert(QStringLiteral("durationGlo"), durationGlo);
     o.insert(QStringLiteral("durationJp"), durationJp);
+    o.insert("notificationsEnabled", notificationsEnabled);
+    o.insert("notificationOptions", notificationOptions);
+    o.insert("expandedLeaderboard", expandedLeaderboard);
+    o.insert("leaderboardPaceBackground", leaderboardPaceBackground);
 
     const QJsonDocument doc(o);
     QSaveFile f(configPath());

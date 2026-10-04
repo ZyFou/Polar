@@ -61,3 +61,7 @@ build/
 
 # config file
 polar.json
+
+# Update staging files
+.polar-update-*
+polar-update-result.json

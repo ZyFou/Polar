@@ -98,19 +98,45 @@ Polar is released under the [MIT License](https://choosealicense.com/licenses/mi
 - `resources/images`: bundled artwork (resource aliases remain unchanged)
 - `translations`: Linguist catalogs
 
-## Race analysis
+## Leaderboard views
 
-Open **Race analysis** in the menu for a native Top 20 table. Choose a reference
-player, a 1/2/6-hour scoring window and an optional extra future pause. Finish
-scenarios compare recent pace with active/idle behavior observed in the current
-snapshot. They are not confidence intervals or learned cross-edition habits.
-Tooltips describe sample coverage and why an estimate may be unavailable.
+Use **Expanded view** on the Leaderboard page to see all 100 players across the
+page, with scoring pace, active/idle time, finish scenarios, gaps and catch-up
+estimates. Both views share the same refresh and scheduled quarter-hour updates.
+Selection and scroll position survive refreshes; rank changes animate, with new
+entrants and departures moving through the bottom of the list.
+
+The optional background follows the selected player's wins/hour, from hour zero
+to the tournament end. Choose a 1/2/6-hour scoring window and an additional future
+pause for the selected player. Projections use actual sample timestamps, exclude
+missing intervals and score resets, and stop when live data are stale. Finish
+scenarios compare recent pace with observed pace; they are not probabilities.
 
 Tournament `0` always means **Current**, even when metadata omits its edition
 number. Archive numbers come from the public archive catalog. Current cannot be
-mixed with numbered archives in one range; add another player entry to compare
-both. The historical rank estimator requires a known edition number, excludes
-the target edition and uses actual edition numbers for its regression.
+mixed with numbered archives in one comparison range. Rank goals use only older,
+completed tournaments. If the current edition has no number, forecasts use
+verified archive dates instead of inventing an edition number.
+
+## Settings and notifications
+
+The new UI style applies to every page and to settings. The style and control
+transparency options preview immediately; Cancel restores the previous appearance.
+Mouse interactions do not leave a native focus outline, while keyboard navigation
+keeps an explicit focus indicator. Notifications slide in and out at the bottom
+left, with a global switch, per-category switches and durations from 2 to 120
+seconds. The notification history shows concise messages without request URLs.
+
+On Windows, Start menu settings distinguish a valid shortcut from one pointing to
+another directory or executable, and provide a repair action. Update checks run
+at startup and every hour and compare release tags numerically. A newer release
+is offered through an in-app Yes/No notification. The verified executable is
+staged beside the client; a separate helper waits for its process to exit, replaces
+the file at the same path, then restarts it with its original arguments. Size,
+PE header and release SHA-256 (when provided) are checked. Settings and renamed
+executable paths are preserved; a failed restart restores the previous executable.
+Other platforms open the release page only on request and keep their source-built
+client unchanged.
 
 The API transport is asynchronous, reuses one connection manager and coalesces
 identical in-flight requests. Batch comparisons allow four concurrent requests
@@ -130,7 +156,9 @@ QT_QPA_PLATFORM=offscreen ./polar_tests
 
 Tests cover metadata without an id, region catalogs, series validation, real-time
 intervals, missing samples, large scores, projection boundaries, asynchronous
-request coalescing and bounded batches, widget input, graph replacement followed
-by resizing, and bundled resources. Offscreen plugin size-hint warnings are
+request coalescing and bounded batches, Current/rank-1 goals without an edition
+number, translation, animated list reconciliation, notification actions and expiry,
+live settings, release integrity, graph replacement and bundled resources. Windows
+tests also exercise shortcut repair and executable replacement with rollback. Offscreen plugin size-hint warnings are
 expected. Windows static packaging and live tournament accuracy still require
 validation on the target platform.

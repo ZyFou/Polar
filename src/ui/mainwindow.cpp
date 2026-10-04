@@ -1,4 +1,8 @@
-#include "raceanalysisdialog.h"
+#include "leaderboardoverview.h"
+#include "notificationcenter.h"
+#include "appstyle.h"
+#include "switchbutton.h"
+#include "startmenushortcut.h"
 #include "editionpicker.h"
 #include "wtapi.h"
 #include "wtdata.h"
@@ -69,6 +73,8 @@
 #include <QLocale>      // NEW: for locale-aware % formatting
 #include <QGroupBox>    // NEW: for groupbox titles retranslation
 #include <QCoreApplication> // NEW: for QCoreApplication::translate (UI loaded via QUiLoader)
+#include <QScrollArea>
+#include <QFormLayout>
 #include <QStandardPaths> // NEW
 #include <cmath> // FIX: for std::round/std::clamp usage with cmath
 
@@ -78,16 +84,6 @@
 #include <QtCharts/QValueAxis>
 #include <QtCharts/QCategoryAxis>
 
-#ifdef Q_OS_WIN
-#ifndef NOMINMAX
-#define NOMINMAX 1 // FIX: prevent windows.h from defining min/max macros
-#endif
-#include <windows.h>
-#include <shobjidl.h>
-#include <objbase.h>
-// faire le prototype
-static bool createStartMenuShortcut(const QString& displayName);
-#endif
 
 QString formatWithCommas(qint64 number) {
     QString numberStr = QString::number(number);
@@ -134,6 +130,9 @@ MainWindow::MainWindow(QWidget *parent)
     , labelDynamic(nullptr)
 {
     ui->setupUi(this);
+    AppStyle::installFocusStyle();
+    notifications=new NotificationCenter(this);
+    ui->boitetext->document()->setMaximumBlockCount(200);
 
     // Set up standard widgets to follow transparency settings. Done dynamically in updateBackgroundPalette() now.
 
@@ -201,9 +200,9 @@ MainWindow::MainWindow(QWidget *parent)
     }
 
     // Que des chiffres dans les goals, et mettre des virgules tous les 3 chiffres
-    ui->lineEdit_goal->setValidator( new QIntValidator(0, 10000000000, this) );
+    ui->lineEdit_goal->setValidator(new QRegularExpressionValidator(QRegularExpression("[0-9,]{0,18}"), this));
     ui->lineEdit_goal->setMaxLength(13);
-    ui->lineEdit_afk->setValidator( new QIntValidator(0, 10000000000, this) );
+    ui->lineEdit_afk->setValidator(new QIntValidator(0,99,this));
     ui->lineEdit_afk->setMaxLength(2);
 
     m_debounceTimerRank = new QTimer(this);
@@ -308,7 +307,34 @@ MainWindow::MainWindow(QWidget *parent)
     if (!pageClassement) {
         pageClassement = new QWidget(this);
     }
-    stackedWidget->addWidget(pageClassement);
+    auto *leaderboardPage=new QWidget(this);
+    leaderboardPage->setObjectName("leaderboardPage");
+    auto *leaderboardLayout=new QVBoxLayout(leaderboardPage);leaderboardLayout->setContentsMargins(0,0,0,0);
+    auto *leaderboardToolbar=new QHBoxLayout;
+    leaderboardSwitch=new SwitchButton(tr("Vue étendue"),leaderboardPage);
+    leaderboardSwitch->setObjectName("expandedLeaderboard");leaderboardSwitch->setChecked(AppSettings::expandedLeaderboard);
+    auto *leaderboardReset=new QPushButton(tr("Actualiser"),leaderboardPage);leaderboardReset->setObjectName("leaderboardReset");
+    auto *leaderboardNext=new QLabel(leaderboardPage);leaderboardNext->setObjectName("leaderboardNextRefresh");
+    leaderboardToolbar->addWidget(leaderboardSwitch);leaderboardToolbar->addStretch();leaderboardToolbar->addWidget(leaderboardNext);leaderboardToolbar->addWidget(leaderboardReset);
+    leaderboardLayout->addLayout(leaderboardToolbar);
+    leaderboardViews=new QStackedWidget(leaderboardPage);leaderboardViews->addWidget(pageClassement);
+    leaderboardOverview=new LeaderboardOverview(leaderboardViews);leaderboardViews->addWidget(leaderboardOverview);
+    leaderboardViews->setCurrentIndex(AppSettings::expandedLeaderboard?1:0);
+    leaderboardLayout->addWidget(leaderboardViews,1);stackedWidget->addWidget(leaderboardPage);
+    connect(leaderboardSwitch,&QCheckBox::toggled,this,[this](bool enabled) {
+        AppSettings::expandedLeaderboard=enabled;AppSettings::save();leaderboardViews->setCurrentIndex(enabled?1:0);
+        if(Leaderboard::snapshotRows.isEmpty()) Leaderboard::onRefreshClicked(this,Leaderboard::playerListPtr);
+    });
+    connect(leaderboardReset,&QPushButton::clicked,this,[this] {Leaderboard::onRefreshClicked(this,Leaderboard::playerListPtr);});
+    connect(leaderboardOverview,&LeaderboardOverview::playerChosen,this,[this](const QJsonObject &player) {
+        if(Leaderboard::playerListPtr) {
+            for(int i=0;i<Leaderboard::playerListPtr->count();++i) {
+                auto *item=Leaderboard::playerListPtr->item(i);
+                if(item->data(Qt::UserRole).toJsonObject().value("id")==player.value("id")) {Leaderboard::playerListPtr->setCurrentItem(item);break;}
+            }
+        }
+        Leaderboard::affichergraphiqueettexte(this,player);
+    });
 
     // NEW: Charger la page Joueur depuis joueur.ui
     QFile joueurUi(":/joueur.ui");
@@ -344,6 +370,7 @@ MainWindow::MainWindow(QWidget *parent)
     Leaderboard::gapPlaceholder  = nullptr;
 
     labelDynamic = pageClassement->findChild<QLabel*>("labelDynamic");
+    if(refreshButton) refreshButton->hide();
 
     if (refreshButton && playerList_) {
         connect(refreshButton, &QPushButton::clicked, this, [this, playerList_]() {
@@ -542,6 +569,11 @@ MainWindow::MainWindow(QWidget *parent)
     connect(updater, &Updater::downloadProgress, this, &MainWindow::onUpdateDownloadProgress);
     connect(updater, &Updater::downloadFinished, this, &MainWindow::onUpdateDownloadFinished);
     updater->checkForUpdate();
+    const auto updateResult=Updater::takeUpdateResult();
+    if(!updateResult.isEmpty()) QTimer::singleShot(350,this,[this,updateResult] {
+        notify(updateResult.value("ok").toBool()?"success":"error",updateResult.value("ok").toBool()
+            ?tr("Polar a été mis à jour."):tr("La mise à jour a échoué. Votre exécutable précédent a été conservé."));
+    });
 
     // Initialiser l'easter-egg (détection sur label_time_left)
     setupEasterEgg();
@@ -591,29 +623,7 @@ MainWindow::MainWindow(QWidget *parent)
     buildTbEditionCombo();
 
     QTimer::singleShot(0, this, &MainWindow::fetchAndInitTbMetadata);
-    auto *analysisAction = this->menuBar()->addAction(tr("Race analysis"));
-    analysisAction->setToolTip(tr("Top 20 pace, observed activity, finish scenarios and catch-up estimates."));
-    connect(analysisAction, &QAction::triggered, this, [this, analysisAction] {
-        const auto region = AppSettings::region;
-        const int edition = AppSettings::selectedEdition;
-        analysisAction->setEnabled(false);
-        WtApi::instance().get(WtApi::endpoint(edition,"get-top100",region),this,
-            [this,region,edition,analysisAction](const QByteArray &bytes,const QString &error) {
-                if (region!=AppSettings::region || edition!=AppSettings::selectedEdition) {analysisAction->setEnabled(true);return;}
-                const auto data=WtData::normalize(QJsonDocument::fromJson(bytes),"top");
-                if(!error.isEmpty() || !data.value("top").isArray()) {
-                    analysisAction->setEnabled(true);
-                    ui->boitetext->append(tr("Race analysis unavailable: %1").arg(error.isEmpty()?tr("Invalid response"):error));return;
-                }
-                WtApi::instance().get(WtApi::endpoint(edition,"metadata",region),this,
-                    [this,region,edition,analysisAction,data](const QByteArray &meta,const QString &) {
-                        analysisAction->setEnabled(true);
-                        if(region!=AppSettings::region || edition!=AppSettings::selectedEdition) return;
-                        auto *dialog=new RaceAnalysisDialog(data.value("top").toArray(),WtData::metadata(QJsonDocument::fromJson(meta)),this);
-                        dialog->setAttribute(Qt::WA_DeleteOnClose);dialog->show();
-                    },300);
-            });
-    });
+
 
 }
 
@@ -631,33 +641,25 @@ void MainWindow::resizeEvent(QResizeEvent *event)
 
 void MainWindow::onUpdateAvailable(const QString &latestVersion, const QString &changelog, const QString &downloadUrl)
 {
-    QMessageBox msgBox;
-    msgBox.setWindowTitle(tr("Mise à jour disponible"));
-    msgBox.setText(tr("Une nouvelle version (%1) est disponible.").arg(latestVersion));
-    msgBox.setInformativeText(changelog);
-    msgBox.setStandardButtons(QMessageBox::Ok);
-    QPushButton *downloadButton = msgBox.addButton(tr("Télécharger"), QMessageBox::AcceptRole);
-    QPushButton *directLinkButton = msgBox.addButton("GitHub", QMessageBox::AcceptRole);
-
-    msgBox.exec();
-    if (msgBox.clickedButton() == directLinkButton) {
-        // Ouvrir le lien de téléchargement
-        QDesktopServices::openUrl(QUrl(downloadUrl));
-        // quitter
-        QApplication::quit();
-    }
-    #ifdef Q_OS_WIN
-        // Si "Télécharger", alors on télécharge le fichier
-        if (msgBox.clickedButton() == downloadButton) {
-            if (updater) {
-                // ligne 747: initier la MAJ (télécharger + lancer + fermer l'appli courante)
-                updater->startDownloadLatestAsset();
-            }
-        }
-    #else
-        if (msgBox.clickedButton() == downloadButton) QDesktopServices::openUrl(QUrl(downloadUrl));
-    #endif
+    Q_UNUSED(changelog);
+    if(offeredUpdateVersion==latestVersion || !AppSettings::notificationEnabled("update")) return;
+    offeredUpdateVersion=latestVersion;
+#ifdef Q_OS_WIN
+    notifications->post("update",tr("Une nouvelle version (%1) est disponible. L’installer et redémarrer Polar ?").arg(latestVersion),
+        [this]{if(updater) updater->startDownloadLatestAsset();},tr("Oui"));
+#else
+    notifications->post("update",tr("Une nouvelle version (%1) est disponible. Recompilez le client pour l’utiliser.").arg(latestVersion),
+        [downloadUrl]{QDesktopServices::openUrl(QUrl(downloadUrl));},tr("Voir la release"));
+#endif
 }
+
+void MainWindow::notify(const QString &kind,const QString &message)
+{
+    const auto clean=NotificationCenter::cleanMessage(message);
+    ui->boitetext->append(clean.toHtmlEscaped());
+    if(notifications) notifications->post(kind,clean);
+}
+
 
 void MainWindow::on_bouton_graphique_clicked()
 {
@@ -673,7 +675,7 @@ void MainWindow::on_bouton_graphique_clicked()
     if(generation!=graphGeneration || region!=AppSettings::region || edition!=AppSettings::selectedEdition) return;
     auto data=WtData::normalize(QJsonDocument::fromJson(bytes),"users");
     if(!error.isEmpty() || data.isEmpty() || data.contains("error")) {
-        ui->boitetext->append(error.isEmpty()?tr("Player data unavailable"):error);return;
+        notify("error",tr("Les données du joueur sont indisponibles. Réessayez dans un instant."));return;
     }
     if(AppSettings::hideNegativeTimes) WtData::filterNegativeHours(data);
 
@@ -681,7 +683,7 @@ void MainWindow::on_bouton_graphique_clicked()
     // Check si ya un "error"
     if (data.contains("error")) {
         QString error = QString::fromStdString(data["error"].toString().toStdString());
-        ui->boitetext->append("Error : " + error);
+        notify("error",tr("Les données du joueur sont indisponibles. Réessayez dans un instant."));
         return;
     }
 
@@ -964,6 +966,14 @@ void MainWindow::changeEvent(QEvent* event)
         if (labelDynamic) {
             labelDynamic->setText(tr("Bienvenue sur le leaderboard !"));
         }
+        if(leaderboardSwitch) {leaderboardSwitch->setText(tr("Vue étendue"));leaderboardSwitch->updateGeometry();}
+        if(auto *reset=findChild<QPushButton*>("leaderboardReset")) reset->setText(tr("Actualiser"));
+        if(ui->groupBox_3) ui->groupBox_3->setTitle(tr("Notifications"));
+        if(autoRefreshTimer && autoRefreshTimer->isActive()) {
+            if(auto *next=findChild<QLabel*>("leaderboardNextRefresh")) next->setText(tr("Prochaine actualisation : %1")
+                .arg(QDateTime::currentDateTime().addMSecs(autoRefreshTimer->remainingTime()).toString("HH:mm")));
+        }
+        if(m_debounceTimerRank) m_debounceTimerRank->start();
         // Refresh ID label with new translation prefix
         updateIdLabelDisplay();
         // Rebuild TB localized texts from cached metadata (no network)
@@ -1595,13 +1605,20 @@ void MainWindow::showOptionsDialog()
     dlg.setWindowTitle(tr("Options"));
     QVBoxLayout layout(&dlg);
     layout.setContentsMargins(0, 0, 0, 0);
-    layout.addWidget(content);
+    auto *scroll=new QScrollArea(&dlg);
+    scroll->setWidgetResizable(true);scroll->setFrameShape(QFrame::NoFrame);scroll->setWidget(content);
+    layout.addWidget(scroll);
+    dlg.resize(520,720);
+    AppStyle::apply(&dlg);
+    const bool previousNewUi=AppSettings::useNewUI;
+    const bool previousTransparent=AppSettings::transparentControls;
 
     // Find widgets
     auto radioGlo = content->findChild<QRadioButton*>("radioGlo");
     auto radioJap = content->findChild<QRadioButton*>("radioJap");
     auto comboTheme = content->findChild<QComboBox*>("comboTheme");
     auto buttonBox = content->findChild<QDialogButtonBox*>("buttonBox");
+    if(buttonBox) buttonBox->setStandardButtons(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
     // NEW: privacy
     auto checkCensorId = content->findChild<QCheckBox*>("checkCensorId");
     // NEW: background selectors
@@ -1700,35 +1717,64 @@ void MainWindow::showOptionsDialog()
         checkNewUI->setChecked(AppSettings::useNewUI);
     }
 
-    // État: activer seulement si la version est à jour
-    if (btnAddStart && lblStartHint) {
-        const bool haveLatestInfo = !Updater::latestReleaseName.isEmpty();
-        const bool isLatest = Updater::isCurrentLatest;
-        btnAddStart->setEnabled(isLatest);
-        if (!isLatest) {
-            lblStartHint->setText(tr("Vous devez installer la dernière version pour ajouter Polar au menu Démarrer."));
-            lblStartHint->setStyleSheet("color:#9aa0a6; font-size:11px;");
-        } else {
-            lblStartHint->clear();
+    auto refreshShortcutState=[this,btnAddStart,lblStartHint] {
+        if(!btnAddStart || !lblStartHint) return;
+        const auto state=StartMenuShortcut::inspect(QCoreApplication::applicationFilePath());
+        btnAddStart->setEnabled(state==StartMenuShortcut::State::Missing || state==StartMenuShortcut::State::Invalid);
+        btnAddStart->setText(state==StartMenuShortcut::State::Invalid?tr("Réparer le raccourci"):tr("Ajouter"));
+        switch(state) {
+        case StartMenuShortcut::State::Valid:
+            lblStartHint->setText(tr("Polar est déjà dans le menu Démarrer. Le raccourci pointe vers cet exécutable."));break;
+        case StartMenuShortcut::State::Invalid:
+            lblStartHint->setText(tr("Le raccourci existant pointe vers un chemin ou un exécutable incorrect. Vous pouvez le réparer."));break;
+        case StartMenuShortcut::State::Unsupported:
+            lblStartHint->setText(tr("Disponible sous Windows."));break;
+        default:lblStartHint->clear();break;
         }
+        lblStartHint->setWordWrap(true);
+    };
+    refreshShortcutState();
+    if(btnAddStart && lblStartHint) connect(btnAddStart,&QPushButton::clicked,&dlg,[this,lblStartHint,refreshShortcutState] {
+        if(StartMenuShortcut::create(QCoreApplication::applicationFilePath())) refreshShortcutState();
+        else lblStartHint->setText(tr("Impossible de créer le raccourci du menu Démarrer."));
+    });
+
+    // Preview the shared theme immediately, including this options dialog. Cancel restores it.
+    if(checkNewUI) connect(checkNewUI,&QCheckBox::toggled,&dlg,[this,&dlg](bool enabled) {
+        AppSettings::useNewUI=enabled;updateBackgroundPalette();AppStyle::apply(&dlg);
+    });
+    if(checkTransparent) connect(checkTransparent,&QCheckBox::toggled,&dlg,[this,&dlg](bool enabled) {
+        AppSettings::transparentControls=enabled;updateBackgroundPalette();AppStyle::apply(&dlg);
+    });
+
+    auto *notificationGroup=new QGroupBox(tr("Notifications"),content);
+    notificationGroup->setObjectName("notificationSettings");
+    auto *notificationLayout=new QVBoxLayout(notificationGroup);
+    auto *enabled=new SwitchButton(tr("Activer les notifications dans l’application"),notificationGroup);
+    enabled->setObjectName("notificationsEnabled");enabled->setChecked(AppSettings::notificationsEnabled);
+    notificationLayout->addWidget(enabled);
+    auto *notificationCases=new QWidget(notificationGroup);notificationCases->setObjectName("notificationCases");
+    auto *casesLayout=new QFormLayout(notificationCases);
+    QMap<QString,QCheckBox*> caseChecks;QMap<QString,QSpinBox*> caseDurations;
+    const QList<QPair<QString,QString>> cases={{"error",tr("Erreurs")},{"success",tr("Actions réussies")},
+        {"copy",tr("Copie de graphique")},{"refresh",tr("Actualisation du classement")},{"update",tr("Mises à jour")}};
+    for(const auto &entry:cases) {
+        auto *check=new QCheckBox(entry.second,notificationCases);check->setObjectName("notify_"+entry.first);
+        check->setChecked(AppSettings::notificationEnabled(entry.first) || (!AppSettings::notificationsEnabled
+            && AppSettings::notificationOptions.value(entry.first).toObject().value("enabled").toBool(entry.first!="refresh")));
+        auto *duration=new QSpinBox(notificationCases);duration->setObjectName("notify_seconds_"+entry.first);
+        duration->setRange(2,120);duration->setValue(AppSettings::notificationDuration(entry.first));duration->setSuffix(tr(" s"));
+        duration->setEnabled(check->isChecked());connect(check,&QCheckBox::toggled,duration,&QWidget::setEnabled);
+        casesLayout->addRow(check,duration);caseChecks.insert(entry.first,check);caseDurations.insert(entry.first,duration);
     }
-    // Action "Ajouter"
-    if (btnAddStart && lblStartHint) {
-        QObject::connect(btnAddStart, &QPushButton::clicked, &dlg, [this, lblStartHint]() {
-        #ifdef Q_OS_WIN
-            const bool ok = createStartMenuShortcut(QStringLiteral("Polar"));
-        #else
-            const bool ok = false;
-        #endif
-            if (ok) {
-                lblStartHint->setText(QString::fromUtf8("✔ ") + tr("Ajouté au menu Démarrer."));
-                lblStartHint->setStyleSheet("color:#2ECC71; font-size:11px;");
-            } else {
-                lblStartHint->setText(QString::fromUtf8("✖ ") + tr("Erreur lors de l'ajout au menu Démarrer."));
-                lblStartHint->setStyleSheet("color:#E74C3C; font-size:11px;");
-            }
-        });
+    notificationCases->setEnabled(enabled->isChecked());
+    connect(enabled,&QCheckBox::toggled,notificationCases,&QWidget::setEnabled);
+    notificationLayout->addWidget(notificationCases);
+    if(auto *contentLayout=qobject_cast<QVBoxLayout*>(content->layout())) {
+        if(buttonBox) {contentLayout->removeWidget(buttonBox);layout.addWidget(buttonBox);}
+        contentLayout->addWidget(notificationGroup);
     }
+    for(auto *label:content->findChildren<QLabel*>()) label->setWordWrap(true);
 
     // Initialize from settings (checkbox)
     if (checkUpdateShortcut) {
@@ -1786,6 +1832,13 @@ void MainWindow::showOptionsDialog()
         if (checkNewUI) AppSettings::useNewUI = checkNewUI->isChecked();
         // NEW: save shortcut-update preference
         if (checkUpdateShortcut) AppSettings::updateStartShortcutOnUpgrade = checkUpdateShortcut->isChecked();
+        AppSettings::notificationsEnabled=enabled->isChecked();
+        for(auto it=caseChecks.cbegin();it!=caseChecks.cend();++it)
+            AppSettings::notificationOptions.insert(it.key(),QJsonObject{{"enabled",it.value()->isChecked()},
+                {"seconds",caseDurations.value(it.key())->value()}});
+        notifications->preferencesChanged();
+        offeredUpdateVersion.clear();
+        if(updater) updater->checkForUpdate();
         // NEW: save date format
         if (comboDateFormat) AppSettings::dateFormatIndex = comboDateFormat->currentIndex();
         AppSettings::save();
@@ -1805,6 +1858,9 @@ void MainWindow::showOptionsDialog()
             buildTbEditionCombo(); // updates custom picker
              fetchAndInitTbMetadata();
         }
+    } else {
+        AppSettings::useNewUI=previousNewUi;AppSettings::transparentControls=previousTransparent;
+        updateBackgroundPalette();
     }
 }
 
@@ -1893,32 +1949,48 @@ void MainWindow::updateRankEstimation()
         return;
     }
 
-    // Determine base edition (current selected metadata), and min start per region
-    m_rankProjectedPts=-1; m_rankHistoryEds.clear(); m_rankHistoryPts.clear();
-    int baseEd = tbEdition;
-    if (baseEd <= 0) {
-        lbl->setText(tr("Edition number unavailable"));
-        lbl->setToolTip(tr("The API provides dates but no edition number. Historical rank extrapolation is disabled rather than guessing a tournament."));
-        if (ui->label_win_pace_rank) ui->label_win_pace_rank->clear();
+    m_rankProjectedPts=-1;m_rankHistoryEds.clear();m_rankHistoryPts.clear();
+    if(tbStartEpoch<=0 || archiveEditions.isEmpty()) {
+        lbl->setText(tr("Loading…"));
+        if(ui->label_win_pace_rank) ui->label_win_pace_rank->clear();
         hasRankWinPace=false;updateRankOverlayOnGraphs(true);return;
     }
-
-    const bool isJP = (AppSettings::region == "Jap" || AppSettings::region == "JP");
-    const int start = isJP ? 56 : 55;
-
-    // Build up to 8 editions for a better trend projection
-    QVector<int> eds;
-    for (int i = 1; i <= 8; ++i) {
-        if (baseEd - i >= start) eds.push_back(baseEd - i);
+    QVector<int> candidates;
+    for(int ed:archiveEditions) {
+        if(tbEdition>0 && ed>=tbEdition) continue;
+        candidates.append(ed);if(candidates.size()==8) break;
     }
+    QList<QUrl> metadataUrls;
+    for(int ed:candidates) metadataUrls.append(WtApi::endpoint(ed,"metadata",region));
+    WtApi::instance().getMany(metadataUrls,this,[this,candidates,metadataUrls,rank,generation,region,requestedEdition](const QHash<QUrl,WtApi::Result> &results) {
+        if(generation!=rankGeneration || region!=AppSettings::region || requestedEdition!=AppSettings::selectedEdition) return;
+        QMap<int,qint64> starts;
+        for(int i=0;i<candidates.size();++i) {
+            const auto result=results.value(metadataUrls[i]);
+            if(!result.error.isEmpty()) continue;
+            const auto meta=WtData::metadata(QJsonDocument::fromJson(result.bytes));
+            const qint64 start=meta.value("start_at").toVariant().toLongLong();
+            const qint64 end=meta.value("end_at").toVariant().toLongLong();
+            // Dates identify the target even when API metadata has no edition id.
+            // Never use its score, a later tournament, or an unfinished archive in training.
+            if(start>0 && start<tbStartEpoch && end<=tbStartEpoch) starts.insert(candidates[i],start);
+        }
+        estimateRankFromHistory(rank,starts,generation,region,requestedEdition);
+    });
+}
 
-    m_rankTarget = rank;
-    m_rankHistoryEds.clear();
-    m_rankHistoryPts.clear();
-
+void MainWindow::estimateRankFromHistory(int rank,const QMap<int,qint64> &starts,quint64 generation,
+                                         const QString &region,int requestedEdition)
+{
+    auto *lbl=ui->label_estimation_rank;
+    const int baseEd=tbEdition;
+    QVector<int> eds;
+    for(auto it=starts.cend();it!=starts.cbegin();) {--it;eds.append(it.key());}
+    m_rankTarget=rank;
+    lbl->setToolTip(baseEd>0?QString():tr("Estimated from previous tournament dates; the current edition number is not required."));
     QList<QUrl> urls;
     for(int ed:eds) {QUrlQuery q;q.addQueryItem("rank",QString::number(rank));urls.append(WtApi::endpoint(ed,"get-user",region,q));}
-    WtApi::instance().getMany(urls,this,[this,eds,urls,rank,baseEd,lbl,generation,region,requestedEdition](const QHash<QUrl,WtApi::Result> &results) {
+    WtApi::instance().getMany(urls,this,[this,eds,starts,urls,rank,baseEd,lbl,generation,region,requestedEdition](const QHash<QUrl,WtApi::Result> &results) {
     if(generation!=rankGeneration || region!=AppSettings::region || requestedEdition!=AppSettings::selectedEdition) return;
     double rankAvgSeed = -1.0;
     
@@ -1959,7 +2031,11 @@ void MainWindow::updateRankEstimation()
     if (!m_rankHistoryPts.isEmpty()) {
         QVector<int> historyEditions;
         for(qint64 ed:m_rankHistoryEds) historyEditions.append(int(ed));
-        const double projection=Performance::historicalProjection(historyEditions,m_rankHistoryPts,baseEd);
+        QVector<qint64> dates;
+        for(qint64 ed:m_rankHistoryEds) dates.append(starts.value(int(ed)));
+        const double projection=baseEd>0
+            ? Performance::historicalProjection(historyEditions,m_rankHistoryPts,baseEd)
+            : Performance::historicalProjectionByDate(dates,m_rankHistoryPts,tbStartEpoch);
         if(std::isfinite(projection) && projection<double(std::numeric_limits<qint64>::max()))
             estimatedPoints=static_cast<qint64>(projection);
 
@@ -1999,11 +2075,9 @@ void MainWindow::updateRankEstimation()
                 ui->label_win_pace_rank->clear();
                 hasRankWinPace = false;
                 updateRankOverlayOnGraphs(true);
-                // Also update the estimation label to show the error
-                if (ui->label_estimation_rank) {
-                    ui->label_estimation_rank->setStyleSheet("color: red; font-size: 14px;");
-                    ui->label_estimation_rank->setText(tr("On ne peut pas deviner\nvos points actuels !\nGénérez un graphique\nou activez la Simulation."));
-                }
+                // Keep the rank's estimated target visible; only personal pace needs a player score.
+                if(ui->label_estimation_rank) ui->label_estimation_rank->setToolTip(
+                    tr("On ne peut pas deviner\nvos points actuels !\nGénérez un graphique\nou activez la Simulation."));
                 return;
             }
         }
@@ -2115,7 +2189,7 @@ void MainWindow::updateRankEstimation()
                 double totalWins = (pointsPerStep > 0) ? (static_cast<double>(targetDelta) / pointsPerStep) : 0.0;
                 
                 currentText += QString("<div style='margin-top:6px; font-size:11px; opacity:0.8;'>");
-                currentText += tr("Simulation: %1").arg(static_cast<int>(totalWins)) + " victoires";
+                currentText += tr("Simulation : %1 victoires").arg(static_cast<int>(totalWins));
                 currentText += QString("</div>");
             }
             ui->label_estimation_rank->setText(currentText);
@@ -2213,7 +2287,7 @@ void MainWindow::fetchAndInitTbMetadata()
     hasWinPace=hasRankWinPace=false;
     functb::points=functb::wins=functb::seed="-1";
     functb::hour_missing="-1";
-    if(tbTitleLabel) tbTitleLabel->setText(edition==0?tr("Current WT"):tr("%1ème Tenkaichi Budokai").arg(edition));
+    if(tbTitleLabel) tbTitleLabel->setText(edition==0?tr("Tenkaichi Budokai actuel"):tr("%1ème Tenkaichi Budokai").arg(edition));
     if(tbProgressBar) {tbProgressBar->setValue(0);tbProgressBar->setFormat("—");}
     ui->label_time_left->setText(tr("Loading…"));ui->wt_date->clear();
     ui->label_estimation_rank->clear();ui->label_win_pace_rank->clear();
@@ -2222,6 +2296,7 @@ void MainWindow::fetchAndInitTbMetadata()
     for(auto *view:{ui->graphiqueTest,Leaderboard::graphPlaceholder}) if(view && view->scene()) view->scene()->clear();
     if(Leaderboard::playerListPtr) Leaderboard::playerListPtr->clear();
     Leaderboard::snapshotRows.clear();Leaderboard::overlayNames.clear();Leaderboard::currentSelectedName.clear();
+    if(leaderboardOverview) {leaderboardOverview->clearSnapshot();leaderboardOverview->setMetadata(0,0);}
     WtApi::instance().get(WtApi::endpoint(edition,"metadata",region),this,
         [this,edition,region,generation](const QByteArray &bytes,const QString &error) {
             if(generation!=metadataGeneration || edition!=AppSettings::selectedEdition || region!=AppSettings::region) return;
@@ -2230,6 +2305,7 @@ void MainWindow::fetchAndInitTbMetadata()
             tbStartEpoch=m.value("start_at").toVariant().toLongLong();
             tbEndEpoch=m.value("end_at").toVariant().toLongLong();
             tbEdition=m.value("id").toInt(edition);
+            if(leaderboardOverview) leaderboardOverview->setMetadata(tbStartEpoch,tbEndEpoch);
             if(tbTitleLabel && tbEdition>0) tbTitleLabel->setText(tr("%1ème Tenkaichi Budokai").arg(tbEdition));
             updateTbUiFromTimes();updateTbDatesDisplay();updateRankEstimation();
         },300);
@@ -2316,9 +2392,8 @@ void MainWindow::updateTbDatesDisplay()
 // NEW: rebuild localized title/time using cached metadata (no refetch)
 void MainWindow::refreshTbLocalizedTexts()
 {
-    if (tbTitleLabel && tbEdition > 0) {
-        tbTitleLabel->setText(tr("%1ème Tenkaichi Budokai").arg(tbEdition));
-    }
+    if(tbTitleLabel) tbTitleLabel->setText(tbEdition>0
+        ? tr("%1ème Tenkaichi Budokai").arg(tbEdition) : tr("Tenkaichi Budokai actuel"));
     updateTbUiFromTimes();
     updateTbDatesDisplay();
 }
@@ -2335,12 +2410,12 @@ void MainWindow::updateBackgroundPalette()
     if (mb) {
         mb->setAttribute(Qt::WA_StyledBackground, true);
         mb->setAutoFillBackground(false);
-        mb->setStyleSheet("QMenuBar { background: transparent; }");
+        if(mb->styleSheet()!="QMenuBar { background: transparent; }") mb->setStyleSheet("QMenuBar { background: transparent; }");
     }
     if (statusBar()) {
         statusBar()->setAttribute(Qt::WA_StyledBackground, true);
         statusBar()->setAutoFillBackground(false);
-        statusBar()->setStyleSheet("QStatusBar { background: transparent; }");
+        if(statusBar()->styleSheet()!="QStatusBar { background: transparent; }") statusBar()->setStyleSheet("QStatusBar { background: transparent; }");
     }
 
     if (useBg) {
@@ -2376,13 +2451,13 @@ void MainWindow::updateBackgroundPalette()
             central->setAutoFillBackground(false);
             central->setPalette(QPalette());
             central->setAttribute(Qt::WA_StyledBackground, true);
-            central->setStyleSheet("background: transparent;");
+            if(!central->styleSheet().isEmpty()) central->setStyleSheet({});
         } else {
             // Keep wallpaper visible in gaps (no fill), but let children paint opaque by removing inherited transparency
             central->setAttribute(Qt::WA_StyledBackground, false);
             central->setAutoFillBackground(false); // CHANGED: was true (hid the wallpaper)
             central->setPalette(QPalette());
-            central->setStyleSheet("");            // remove transparent background inheritance
+            if(!central->styleSheet().isEmpty()) central->setStyleSheet("");            // remove transparent background inheritance
         }
         central->update();
     }
@@ -2390,41 +2465,9 @@ void MainWindow::updateBackgroundPalette()
     if (mb) mb->update();
     if (statusBar()) statusBar()->update();
     
-    // Apply UI DA dynamically to all specific group boxes
-    QString osThemeStyles = "";
-    if (AppSettings::useNewUI) {
-        QString bgStyle = transparentControls ? "rgba(128, 128, 128, 20)" : "palette(window)";
-        QString paneBg = transparentControls ? "transparent" : "palette(window)";
-        QString btnStyle = transparentControls ? "rgba(128, 128, 128, 30)" : "palette(button)";
-        QString hoverStyle = transparentControls ? "rgba(128, 128, 128, 50)" : "palette(light)";
-        QString pressedStyle = transparentControls ? "rgba(128, 128, 128, 70)" : "palette(mid)";
-
-        osThemeStyles = 
-            "QGroupBox { background: " + paneBg + "; border: 1px solid rgba(128, 128, 128, 60); border-radius: 4px; margin-top: 18px; font-weight: bold; } "
-            "QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top left; left: 10px; padding: 0 5px; } "
-            "QTabWidget::pane { background: " + paneBg + "; border: 1px solid rgba(128, 128, 128, 60); border-top-right-radius: 4px; border-bottom-left-radius: 4px; border-bottom-right-radius: 4px; top: -1px; } "
-            "QTabWidget > QWidget { background: transparent; } "
-            "QTabBar::tab { background: " + bgStyle + "; padding: 5px 12px; border: 1px solid rgba(128, 128, 128, 60); border-bottom: none; border-top-left-radius: 4px; border-top-right-radius: 4px; margin-right: 2px; } "
-            "QTabBar::tab:selected { background: " + (transparentControls ? "transparent" : "palette(window)") + "; border-top: 2px solid #1a73e8; border-bottom: 3px solid " + (transparentControls ? "rgba(128, 128, 128, 0)" : "palette(window)") + "; margin-bottom: -2px; } "
-            "QTabBar::tab:hover:!selected { background: " + hoverStyle + "; } "
-            "QLineEdit, QComboBox { background: " + (transparentControls ? bgStyle : "palette(base)") + "; border: 1px solid rgba(128, 128, 128, 60); border-radius: 2px; padding: 4px; } "
-            "QLineEdit[readOnly=\"false\"] { background: palette(base); border: 1px solid #1a73e8; } " // Better UX feedback for edit mode
-            "QLineEdit:focus:!readOnly, QComboBox:focus { border: 1px solid #1a73e8; } "
-            "QPushButton { background: " + btnStyle + "; border: 1px solid rgba(128, 128, 128, 60); border-radius: 2px; padding: 5px 12px; font-weight: bold; } "
-            "QPushButton:hover { background: " + hoverStyle + "; border: 1px solid #1a73e8; } "
-            "QPushButton:pressed { background: " + pressedStyle + "; } ";
-    }
-
-    if (ui->goal) ui->goal->setStyleSheet(osThemeStyles);
-    QGroupBox *idBox = findChild<QGroupBox*>("groupBox_2");
-    if (idBox) idBox->setStyleSheet(osThemeStyles);
-    QGroupBox *grBox = findChild<QGroupBox*>("groupBox");
-    if (grBox) grBox->setStyleSheet(osThemeStyles);
-    QGroupBox *coBox = findChild<QGroupBox*>("groupBox_3");
-    if (coBox) coBox->setStyleSheet(osThemeStyles);
-    QGroupBox *edBox = findChild<QGroupBox*>("groupBox_4");
-    if (edBox) edBox->setStyleSheet(osThemeStyles);
-    
+    for(auto *group:findChildren<QGroupBox*>()) if(!group->styleSheet().isEmpty()) group->setStyleSheet({});
+    AppStyle::apply(this);
+    if(ui->groupBox_3) ui->groupBox_3->setTitle(tr("Notifications"));
     this->update();
 }
 
@@ -2549,6 +2592,8 @@ void MainWindow::scheduleNextAutoRefresh()
               << std::endl;
 
     autoRefreshTimer->start(msToNext);
+    if(auto *next=findChild<QLabel*>("leaderboardNextRefresh"))
+        next->setText(tr("Prochaine actualisation : %1").arg(now.addMSecs(msToNext).toString("HH:mm")));
 }
 
 // NEW: perform refresh if Classement page is selected; always reschedule
@@ -2617,6 +2662,7 @@ void MainWindow::copyClassementGraphToClipboard()
     // Copy to clipboard
     QClipboard* cb = QApplication::clipboard();
     cb->setImage(img);
+    notify("copy",tr("Graphique copié dans le presse-papiers."));
 
     // Show confirmation text: "Graphique copié !" (reset any error style)
     if (confirmCopyLabel && confirmCopyEffect && confirmCopyHoldTimer) {
@@ -2650,10 +2696,7 @@ void MainWindow::copyAnyGraphToClipboard()
     QGraphicsView* view = ui->graphiqueTest;
     if (!view->scene() || view->scene()->items().isEmpty()) {
         if (ui->boitetext) {
-            auto prev = ui->boitetext->textColor();
-            ui->boitetext->setTextColor(Qt::red);
-            ui->boitetext->append(tr("Erreur : aucun graphique affiché."));
-            ui->boitetext->setTextColor(prev);
+            notify("error",tr("Erreur : aucun graphique affiché."));
         }
         return;
     }
@@ -2665,15 +2708,13 @@ void MainWindow::copyAnyGraphToClipboard()
     }
     if (img.isNull()) {
         if (ui->boitetext) {
-            auto prev = ui->boitetext->textColor();
-            ui->boitetext->setTextColor(Qt::red);
-            ui->boitetext->append(tr("Erreur : une erreur s'est produite lors de la copie du graphique"));
-            ui->boitetext->setTextColor(prev);
+            notify("error",tr("Erreur : une erreur s'est produite lors de la copie du graphique"));
         }
         return;
     }
     QClipboard* cb = QApplication::clipboard();
     cb->setImage(img);
+    notify("copy",tr("Graphique copié dans le presse-papiers."));
 }
 
 // NEW: checkbox toggled -> compute pace if needed, then update overlay
@@ -2797,7 +2838,7 @@ void MainWindow::buildTbEditionCombo()
 {
     const auto region=AppSettings::region;
     if(tbPicker) tbPicker->setEditions({0},0);
-    WtApi::instance().get(QUrl("https://dokkan-wt.info/older_editions"),this,
+    WtApi::instance().get(WtApi::archiveCatalogUrl(),this,
         [this,region](const QByteArray &bytes,const QString &error) {
             if(region!=AppSettings::region) return;
             auto list=WtData::editions(bytes,region);list.prepend(0);
@@ -2806,7 +2847,9 @@ void MainWindow::buildTbEditionCombo()
                 tbPicker->setEditions(list,AppSettings::selectedEdition);
                 if(!error.isEmpty()) tbPicker->setToolTip(tr("Archive list unavailable. Current remains accessible."));
             }
+            archiveEditions=list;archiveEditions.removeAll(0);
             populateJoueurEditionCombos();populateJoueurTop100Editions();
+            updateRankEstimation();
         },3600);
 }
 
@@ -2817,7 +2860,7 @@ void MainWindow::onUpdateDownloadStarted(qint64 totalBytes)
         updateDlg = new QProgressDialog(tr("Préparation du téléchargement..."), QString(), 0, 100, this);
         updateDlg->setWindowTitle(tr("Téléchargement de la mise à jour"));
         updateDlg->setCancelButton(nullptr);
-        updateDlg->setWindowModality(Qt::ApplicationModal);
+        updateDlg->setWindowModality(Qt::NonModal);
         updateDlg->setMinimumDuration(0);
         updateDlg->setAutoClose(false);
         updateDlg->setAutoReset(false);
@@ -2873,50 +2916,11 @@ void MainWindow::onUpdateDownloadProgress(qint64 receivedBytes, qint64 totalByte
 
 void MainWindow::onUpdateDownloadFinished(const QString& filePath, bool ok, const QString& errorString)
 {
-    if (!updateDlg) return;
-    if (ok) {
-        updateDlg->setValue(updateDlg->maximum());
-        updateDlg->setLabelText(tr("Téléchargement terminé."));
-    } else {
-        updateDlg->setLabelText(tr("Erreur de téléchargement: %1").arg(errorString));
-    }
-    // Let the dialog close; the app will quit right after (updater starts the new exe)
-    QTimer::singleShot(300, updateDlg, [this](){
-        if (updateDlg) { updateDlg->hide(); updateDlg->deleteLater(); updateDlg = nullptr; }
-    });
+    Q_UNUSED(filePath);Q_UNUSED(errorString);
+    if(ok) notify("success",tr("Mise à jour prête. Polar va redémarrer."));
+    else notify("error",tr("La mise à jour a échoué. Polar reste ouvert avec la version actuelle."));
+    if(updateDlg) {updateDlg->hide();updateDlg->deleteLater();updateDlg=nullptr;}
 }
-
-// NEW (Windows): créer un .lnk dans le Start Menu (par-utilisateur)
-#ifdef Q_OS_WIN
-static bool createStartMenuShortcut(const QString& displayName)
-{
-    const QString target = QCoreApplication::applicationFilePath();
-    const QString startMenuDir = QStandardPaths::writableLocation(QStandardPaths::ApplicationsLocation);
-    if (target.isEmpty() || startMenuDir.isEmpty()) return false;
-    const QString linkPath = QDir(startMenuDir).filePath(displayName + QStringLiteral(".lnk"));
-
-    HRESULT hr = CoInitialize(nullptr);
-    const bool didCoInit = SUCCEEDED(hr);
-    IShellLinkW* psl = nullptr;
-    hr = CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_IShellLinkW, reinterpret_cast<void**>(&psl));
-    if (FAILED(hr) || !psl) { if (didCoInit) CoUninitialize(); return false; }
-
-    psl->SetPath(reinterpret_cast<LPCWSTR>(target.utf16()));
-    psl->SetDescription(reinterpret_cast<LPCWSTR>(QStringLiteral("Polar").utf16()));
-    psl->SetIconLocation(reinterpret_cast<LPCWSTR>(target.utf16()), 0);
-
-    IPersistFile* ppf = nullptr;
-    hr = psl->QueryInterface(IID_IPersistFile, reinterpret_cast<void**>(&ppf));
-    if (FAILED(hr) || !ppf) { psl->Release(); if (didCoInit) CoUninitialize(); return false; }
-
-    // Save the shortcut
-    hr = ppf->Save(reinterpret_cast<LPCWSTR>(QString(linkPath).replace('/', '\\').utf16()), TRUE);
-    ppf->Release();
-    psl->Release();
-    if (didCoInit) CoUninitialize();
-    return SUCCEEDED(hr);
-}
-#endif
 
 // ============================================================================
 // NEW: Joueur page implementation (multi-player comparison)
@@ -3010,7 +3014,7 @@ void MainWindow::populateJoueurEditionCombos()
     const auto region=AppSettings::region;
     joueurEditionStartCombo->clear();joueurEditionEndCombo->clear();
     joueurEditionStartCombo->addItem(tr("Current"),0);joueurEditionEndCombo->addItem(tr("Current"),0);
-    WtApi::instance().get(QUrl("https://dokkan-wt.info/older_editions"),this,
+    WtApi::instance().get(WtApi::archiveCatalogUrl(),this,
         [this,region](const QByteArray &bytes,const QString &) {
             if(region!=AppSettings::region) return;
             for(auto *combo:{joueurEditionStartCombo,joueurEditionEndCombo}) {
@@ -3033,7 +3037,7 @@ void MainWindow::populateJoueurTop100Editions()
     joueurTop100EditionCombo->clear();joueurTop100EditionCombo->addItem(tr("Current"),0);
     if(joueurTop100PlayersCombo) {joueurTop100PlayersCombo->clear();joueurTop100PlayersCombo->setEnabled(false);}
     if(joueurAddFromTop100Btn) joueurAddFromTop100Btn->setEnabled(false);
-    WtApi::instance().get(QUrl("https://dokkan-wt.info/older_editions"),this,
+    WtApi::instance().get(WtApi::archiveCatalogUrl(),this,
         [this,region](const QByteArray &bytes,const QString &) {
             if(region!=joueurTop100RegionCombo->currentText()) return;
             const int selected=joueurTop100EditionCombo->currentData().toInt();
@@ -3273,10 +3277,8 @@ void MainWindow::onJoueurAddPlayer()
     if (data.isEmpty() || data.contains("error")) {
         if (joueurStatusLabel) {
             joueurStatusLabel->setStyleSheet("color: red;");
-            QString errorMsg = data.contains("error")
-                ? data["error"].toString()
-                : tr("Identifiant introuvable.");
-            joueurStatusLabel->setText(tr("Erreur : %1").arg(errorMsg));
+            joueurStatusLabel->setText(tr("Les données du joueur sont indisponibles. Vérifiez l’identifiant et réessayez."));
+            notify("error",tr("Les données du joueur sont indisponibles. Vérifiez l’identifiant et réessayez."));
         }
         return;
     }
@@ -3743,6 +3745,7 @@ void MainWindow::onJoueurCopyClicked()
 
     QClipboard* cb = QApplication::clipboard();
     cb->setImage(img);
+    notify("copy",tr("Graphique copié dans le presse-papiers."));
 
     if (joueurCopyConfirmLabel) {
         joueurCopyConfirmLabel->setStyleSheet("color: green;");
@@ -3765,16 +3768,7 @@ void MainWindow::showRankAnalysisDialog(const QString &link) {
     dlg.setWindowTitle(tr("Analyse du rang %1").arg(m_rankTarget));
     dlg.resize(420, 380);
 
-    dlg.setStyleSheet("QDialog { background-color: #252526; color: #cccccc; } "
-                      "QLabel { color: #cccccc; border: none; } "
-                      "QTableWidget { background-color: #1e1e1e; color: #cccccc; gridline-color: #3c3c3c; border: 1px solid #3c3c3c; border-radius: 4px; } "
-                      "QHeaderView::section { background-color: #2d2d2d; color: #9d9d9d; border: 1px solid #3c3c3c; border-top: none; border-left: none; font-weight: bold; padding: 4px; } "
-                      "QScrollBar:vertical { border: none; background: #252526; width: 10px; margin: 0px 0px 0px 0px; } "
-                      "QScrollBar::handle:vertical { background: #4a4a4a; min-height: 20px; border-radius: 5px; } "
-                      "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { border: none; background: none; height: 0px; } "
-                      "QPushButton { background-color: #0e639c; color: white; border-radius: 3px; padding: 6px 15px; font-weight: bold; } "
-                      "QPushButton:hover { background-color: #1177bb; } "
-                      "QPushButton:pressed { background-color: #094771; }");
+    AppStyle::apply(&dlg);
 
     QVBoxLayout *layout = new QVBoxLayout(&dlg);
 
@@ -3797,7 +3791,7 @@ void MainWindow::showRankAnalysisDialog(const QString &link) {
         table->setItem(i, 1, ptItem);
     }
     
-    QTableWidgetItem *edProjItem = new QTableWidgetItem(tr("%1").arg(m_rankProjectedEd));
+    QTableWidgetItem *edProjItem = new QTableWidgetItem(m_rankProjectedEd>0?QString::number(m_rankProjectedEd):tr("Actuelle"));
     QTableWidgetItem *ptProjItem = new QTableWidgetItem(formatMillionsCompact(m_rankProjectedPts));
     edProjItem->setTextAlignment(Qt::AlignCenter);
     edProjItem->setForeground(QBrush(QColor("#3794ff")));
@@ -3822,4 +3816,11 @@ void MainWindow::showRankAnalysisDialog(const QString &link) {
 
 double MainWindow::remainingTournamentHours() const {
     return tbEndEpoch>0?std::max(0.0,(tbEndEpoch-QDateTime::currentSecsSinceEpoch())/3600.0):0;
+}
+
+void MainWindow::leaderboardSnapshotUpdated(const QJsonArray &players) {
+    if(leaderboardOverview) leaderboardOverview->setSnapshot(players);
+}
+void MainWindow::leaderboardPlayerSelected(const QJsonObject &player) {
+    if(leaderboardOverview) leaderboardOverview->selectPlayer(player);
 }

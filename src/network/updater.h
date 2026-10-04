@@ -1,38 +1,35 @@
-#ifndef UPDATER_H
-#define UPDATER_H
-
+#pragma once
 #include <QObject>
 #include <QElapsedTimer>
-#include <QString> // NEW
+#include <QNetworkAccessManager>
+#include <QTimer>
+#include <QJsonObject>
+#include <QString>
+#include <string>
 
-class Updater : public QObject
-{
+class Updater : public QObject {
     Q_OBJECT
 public:
-    explicit Updater(QObject *parent = nullptr);
+    explicit Updater(QObject *parent=nullptr);
     void checkForUpdate();
+    void startDownloadLatestAsset();
     static std::string polar_version;
-    // NEW: état de version (rempli après checkForUpdate)
     static bool isCurrentLatest;
     static QString latestReleaseName;
-    // Download the latest .exe asset, launch it, then quit current app
-    void startDownloadLatestAsset();
-
+    static bool isNewerVersion(const QString &candidate,const QString &current);
+    static bool validExecutable(const QString &path,qint64 expectedSize,const QString &digest);
+    static int applyStagedUpdate(const QString &manifestPath);
+    static QJsonObject takeUpdateResult();
 signals:
-    void updateAvailable(const QString &latestVersion, const QString &changelog, const QString &downloadUrl);
-    // Progress UI
+    void updateAvailable(const QString &latestVersion,const QString &changelog,const QString &downloadUrl);
     void downloadStarted(qint64 totalBytes);
-    void downloadProgress(qint64 receivedBytes, qint64 totalBytes, double speedBytesPerSec, qint64 etaSecs);
-    void downloadFinished(const QString& filePath, bool ok, const QString& errorString);
-
+    void downloadProgress(qint64 receivedBytes,qint64 totalBytes,double speedBytesPerSec,qint64 etaSecs);
+    void downloadFinished(const QString &filePath,bool ok,const QString &errorString);
 private:
-    QString currentVersion;
-    // Remember the chosen asset from the last API response
-    QString m_latestAssetUrl;
-    QString m_latestAssetName;
-    // Timing for speed/ETA
-    QElapsedTimer m_dlTimer;
-    qint64 m_lastBytes = 0;
+    QNetworkAccessManager manager;
+    QTimer checkTimer;
+    QElapsedTimer downloadTimer;
+    QString assetUrl,assetDigest;
+    qint64 assetSize=0;
+    bool checking=false,downloading=false;
 };
-
-#endif // UPDATER_H
