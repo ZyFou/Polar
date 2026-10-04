@@ -371,11 +371,13 @@ private slots:
 };
 int main(int argc,char **argv) {
     if(argc==3) {
-        const QString mode=QString::fromLocal8Bit(argv[1]),path=QString::fromLocal8Bit(argv[2]);
-        if(mode=="--polar-apply-update") {QCoreApplication helper(argc,argv);return Updater::applyStagedUpdate(path);}
-        if(mode=="--polar-update-probe") {QFile marker(path);return marker.open(QIODevice::WriteOnly)?0:1;}
-        if(mode=="--polar-update-parent") {
-            QCoreApplication app(argc,argv);QFile ready(path);if(!ready.open(QIODevice::WriteOnly)) return 1;ready.close();
+        const QString mode=QString::fromLocal8Bit(argv[1]);
+        if(mode=="--polar-apply-update" || mode=="--polar-update-probe" || mode=="--polar-update-parent") {
+            QCoreApplication app(argc,argv);
+            const auto path=app.arguments().value(2);
+            if(mode=="--polar-apply-update") return Updater::applyStagedUpdate(path);
+            if(mode=="--polar-update-probe") {QFile marker(path);return marker.open(QIODevice::WriteOnly)?0:1;}
+            QFile ready(path);if(!ready.open(QIODevice::WriteOnly)) return 1;ready.close();
             QTimer poll;QObject::connect(&poll,&QTimer::timeout,&app,[&]{if(QFileInfo::exists(path+".release")) app.quit();});poll.start(25);
             QTimer::singleShot(10000,&app,&QCoreApplication::quit);return app.exec();
         }

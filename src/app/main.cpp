@@ -10,7 +10,7 @@ int main(int argc, char *argv[])
 {
     if(argc==3 && QString::fromLocal8Bit(argv[1])=="--polar-apply-update") {
         QCoreApplication helper(argc,argv);
-        return Updater::applyStagedUpdate(QString::fromLocal8Bit(argv[2]));
+        return Updater::applyStagedUpdate(helper.arguments().value(2));
     }
     QApplication a(argc, argv);
     // FIX: stabiliser l'identité Qt pour les chemins AppData/QSettings,
